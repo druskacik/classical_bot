@@ -11,6 +11,7 @@ from datetime import date, time
 from pathlib import Path
 from time import monotonic
 from typing import Any
+from urllib.parse import urlparse
 
 import psycopg2
 from psycopg2.extras import Json
@@ -51,6 +52,7 @@ EVENT_UPDATE_FIELDS = (
     "venue",
 )
 EVENT_STATUSES = ("scheduled", "cancelled", "postponed", "rescheduled")
+CITY_EXTERNAL_SOURCE = "geonames"
 
 
 class CodexClientUnhealthyError(RuntimeError):
@@ -152,13 +154,12 @@ LOCATION_RESOLUTION_SCHEMA: dict[str, Any] = {
         "english_name": {"type": ["string", "null"]},
         "local_name": {"type": ["string", "null"]},
         "country_code": {"type": ["string", "null"]},
-        "external_source": {"type": ["string", "null"]},
         "external_id": {"type": ["string", "null"]},
         "raw_value_type": {"type": ["string", "null"], "enum": ["legitimate_name", "postal_or_address", "extraction_artifact", "ambiguous", "invalid", None]},
         "source_url": {"type": "string"},
         "evidence": {"type": "string"},
     },
-    "required": ["status", "existing_city_id", "english_name", "local_name", "country_code", "external_source", "external_id", "raw_value_type", "source_url", "evidence"],
+    "required": ["status", "existing_city_id", "english_name", "local_name", "country_code", "external_id", "raw_value_type", "source_url", "evidence"],
 }
 
 OUTPUT_SCHEMA: dict[str, Any] = {
@@ -731,21 +732,42 @@ def validate_location_resolution(
             return {"status": status, "city_id": city_id, "country_code": country, "raw_value_type": raw_type, "source_url": source_url, "evidence": evidence}
         if status != "new_city":
             raise ValueError("unsupported location status")
-        required = ("english_name", "local_name", "external_source", "external_id")
+        required = ("english_name", "local_name", "external_id")
         values = {field: (proposal.get(field) or "").strip() for field in required}
         if not all(values.values()):
-            raise ValueError("new cities require names and a stable external identity")
+            raise ValueError("new cities require names and a GeoNames identity")
+        if not re.fullmatch(r"[1-9][0-9]*", values["external_id"]):
+            raise ValueError("new cities require a positive numeric GeoNames ID")
+        parsed_source_url = urlparse(source_url)
+        if (
+            parsed_source_url.scheme != "https"
+            or (parsed_source_url.hostname or "").lower()
+            not in {"geonames.org", "www.geonames.org"}
+            or not re.match(
+                rf"^/{re.escape(values['external_id'])}(?:/|$)",
+                parsed_source_url.path,
+            )
+        ):
+            raise ValueError("new city source URL must match its GeoNames ID")
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT id, country_code FROM city WHERE external_source = %s AND external_id = %s",
-                (values["external_source"], values["external_id"]),
+                "SELECT id, country_code FROM city WHERE external_id = %s",
+                (values["external_id"],),
             )
             existing = cursor.fetchone()
         if existing:
             if existing[1] != country:
                 raise ValueError("external city identity conflicts with its stored country")
             return {"status": "existing_city", "city_id": existing[0], "country_code": country, "raw_value_type": raw_type, "source_url": source_url, "evidence": evidence}
-        return {"status": status, "country_code": country, "raw_value_type": raw_type, "source_url": source_url, "evidence": evidence, **values}
+        return {
+            "status": status,
+            "country_code": country,
+            "external_source": CITY_EXTERNAL_SOURCE,
+            "raw_value_type": raw_type,
+            "source_url": source_url,
+            "evidence": evidence,
+            **values,
+        }
     except (KeyError, TypeError, ValueError) as error:
         logger.warning(
             "Ignoring invalid location resolution",
@@ -930,12 +952,12 @@ def apply_location_resolution(cursor, concert: Concert, resolution: dict[str, An
                 (english_name, local_name, country_code, external_source, external_id,
                  source_url, created_by)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (external_source, external_id) DO UPDATE SET
+            ON CONFLICT (external_id) DO UPDATE SET
                 external_id = EXCLUDED.external_id
             RETURNING id, country_code
             """,
             (resolution["english_name"], resolution["local_name"], resolution["country_code"],
-             resolution["external_source"], resolution["external_id"],
+             CITY_EXTERNAL_SOURCE, resolution["external_id"],
              resolution["source_url"], model),
         )
         city_id, stored_country = cursor.fetchone()

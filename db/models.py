@@ -115,7 +115,10 @@ class City(Base):
     __tablename__ = "city"
     __table_args__ = (
         UniqueConstraint("external_source", "external_id", name="uq_city_external_identity"),
+        UniqueConstraint("external_id", name="uq_city_geonames_id"),
         CheckConstraint("country_code ~ '^[A-Z]{2}$'", name="ck_city_country_code"),
+        CheckConstraint("external_source = 'geonames'", name="ck_city_external_source_geonames"),
+        CheckConstraint("external_id ~ '^[1-9][0-9]*$'", name="ck_city_external_id_numeric"),
         Index("ix_city_country_english_name", "country_code", "english_name"),
     )
 

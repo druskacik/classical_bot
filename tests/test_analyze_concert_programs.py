@@ -18,7 +18,7 @@ def not_needed_location():
     return {
         "status": "not_needed", "existing_city_id": None,
         "english_name": None, "local_name": None, "country_code": None,
-        "external_source": None, "external_id": None, "raw_value_type": None,
+        "external_id": None, "raw_value_type": None,
         "source_url": "", "evidence": "",
     }
 
@@ -656,6 +656,9 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
             ["field", "new_value", "source_url", "evidence"],
         )
         self.assertIn("location_resolution", concert_result["required"])
+        location = concert_result["properties"]["location_resolution"]
+        self.assertNotIn("external_source", location["properties"])
+        self.assertNotIn("external_source", location["required"])
 
     def test_validates_supported_event_updates_and_rejects_location_fields(self):
         conn = MagicMock()
@@ -701,7 +704,7 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         proposal = {
             "status": "existing_city", "existing_city_id": 7,
             "english_name": None, "local_name": None, "country_code": "CZ",
-            "external_source": None, "external_id": None,
+            "external_id": None,
             "raw_value_type": "legitimate_name",
             "source_url": "https://example.test", "evidence": "The page says Praha.",
         }
@@ -715,11 +718,76 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         proposal = {
             "status": "new_city", "existing_city_id": None,
             "english_name": "Hukvaldy", "local_name": "Hukvaldy", "country_code": "CZ",
-            "external_source": "geonames", "external_id": None,
+            "external_id": None,
             "raw_value_type": "extraction_artifact",
             "source_url": "https://example.test", "evidence": "The venue is in Hukvaldy.",
         }
         self.assertIsNone(analyzer.validate_location_resolution(MagicMock(), concert, proposal))
+
+    def test_new_city_requires_matching_geonames_url_and_reuses_existing_id(self):
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = (12, "CZ")
+        concert = analyzer.Concert(1, "Test", date.today(), "https://example.test", None)
+        proposal = {
+            "status": "new_city", "existing_city_id": None,
+            "english_name": "Hukvaldy", "local_name": "Hukvaldy",
+            "country_code": "CZ", "external_id": "3074729",
+            "raw_value_type": "legitimate_name",
+            "source_url": "https://www.geonames.org/3074729/hukvaldy.html",
+            "evidence": "The event page identifies Hukvaldy.",
+        }
+
+        accepted = analyzer.validate_location_resolution(conn, concert, proposal)
+
+        self.assertEqual(accepted["status"], "existing_city")
+        self.assertEqual(accepted["city_id"], 12)
+        self.assertEqual(cursor.execute.call_args.args[1], ("3074729",))
+
+        proposal["source_url"] = "https://www.geonames.org/999/wrong.html"
+        self.assertIsNone(analyzer.validate_location_resolution(conn, concert, proposal))
+
+    def test_new_city_assigns_server_owned_geonames_source(self):
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = None
+        concert = analyzer.Concert(1, "Test", date.today(), "https://example.test", None)
+        proposal = {
+            "status": "new_city", "existing_city_id": None,
+            "english_name": "Hukvaldy", "local_name": "Hukvaldy",
+            "country_code": "CZ", "external_id": "3074729",
+            "raw_value_type": "legitimate_name",
+            "source_url": "https://www.geonames.org/3074729/hukvaldy.html",
+            "evidence": "The event page identifies Hukvaldy.",
+        }
+
+        accepted = analyzer.validate_location_resolution(conn, concert, proposal)
+
+        self.assertEqual(accepted["external_source"], "geonames")
+
+    def test_new_city_insert_uses_geonames_id_conflict_target(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (12, "CZ")
+        concert = analyzer.Concert(
+            1, "Test", date.today(), "https://example.test", None,
+            city_raw="Hukvaldy", country_code_raw="CZ",
+        )
+        resolution = {
+            "status": "new_city", "english_name": "Hukvaldy",
+            "local_name": "Hukvaldy", "country_code": "CZ",
+            "external_id": "3074729", "raw_value_type": "legitimate_name",
+            "source_url": "https://www.geonames.org/3074729/hukvaldy.html",
+            "evidence": "The event page identifies Hukvaldy.",
+        }
+
+        analyzer.apply_location_resolution(cursor, concert, resolution, "test-model")
+
+        insert_call = next(
+            call for call in cursor.execute.call_args_list
+            if "INSERT INTO city" in call.args[0]
+        )
+        self.assertIn("ON CONFLICT (external_id)", insert_call.args[0])
+        self.assertEqual(insert_call.args[1][3], "geonames")
 
     def test_page_unavailable_cannot_resolve_location(self):
         concert = analyzer.Concert(1, "Test", date.today(), "https://example.test", None)
