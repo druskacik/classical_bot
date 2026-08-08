@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent_utils import concert_catalog
 from agent_utils.concert_catalog import normalize
+from agent_utils.geonames import GeoNamesRecord
 from analyzers import analyze_concert_programs as analyzer
 from automation.codex_auth import CodexAuthRequiredError
 
@@ -21,6 +22,16 @@ def not_needed_location():
         "external_id": None, "raw_value_type": None,
         "source_url": "", "evidence": "",
     }
+
+
+def geonames_record(external_id="3074729", country="CZ", *names):
+    return GeoNamesRecord(
+        external_id=external_id,
+        country_code=country,
+        feature_class="P",
+        feature_code="P.PPL",
+        names=frozenset(name.casefold() for name in (names or ("Hukvaldy",))),
+    )
 
 
 def no_program_group_result(concerts):
@@ -699,7 +710,7 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
     def test_validates_existing_city_and_rejects_country_conflict(self):
         conn = MagicMock()
         cursor = conn.cursor.return_value.__enter__.return_value
-        cursor.fetchone.return_value = ("Prague", "Praha", "CZ")
+        cursor.fetchone.return_value = ("Prague", "Praha", "CZ", "3067696")
         concert = analyzer.Concert(1, "Test", date.today(), "https://example.test", None)
         proposal = {
             "status": "existing_city", "existing_city_id": 7,
@@ -708,7 +719,12 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
             "raw_value_type": "legitimate_name",
             "source_url": "https://example.test", "evidence": "The page says Praha.",
         }
-        accepted = analyzer.validate_location_resolution(conn, concert, proposal)
+        with patch.object(
+            analyzer,
+            "fetch_geonames_record",
+            return_value=geonames_record("3067696", "CZ", "Prague", "Praha"),
+        ):
+            accepted = analyzer.validate_location_resolution(conn, concert, proposal)
         self.assertEqual(accepted["city_id"], 7)
         proposal["country_code"] = "SK"
         self.assertIsNone(analyzer.validate_location_resolution(conn, concert, proposal))
@@ -738,7 +754,10 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
             "evidence": "The event page identifies Hukvaldy.",
         }
 
-        accepted = analyzer.validate_location_resolution(conn, concert, proposal)
+        with patch.object(
+            analyzer, "fetch_geonames_record", return_value=geonames_record()
+        ):
+            accepted = analyzer.validate_location_resolution(conn, concert, proposal)
 
         self.assertEqual(accepted["status"], "existing_city")
         self.assertEqual(accepted["city_id"], 12)
@@ -761,9 +780,41 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
             "evidence": "The event page identifies Hukvaldy.",
         }
 
-        accepted = analyzer.validate_location_resolution(conn, concert, proposal)
+        with patch.object(
+            analyzer, "fetch_geonames_record", return_value=geonames_record()
+        ):
+            accepted = analyzer.validate_location_resolution(conn, concert, proposal)
 
         self.assertEqual(accepted["external_source"], "geonames")
+
+    def test_geonames_failure_rejects_only_location_resolution(self):
+        conn = MagicMock()
+        concert = analyzer.Concert(
+            1,
+            "Test",
+            date.today(),
+            "https://example.test",
+            None,
+            city_raw="Hukvaldy",
+        )
+        proposal = {
+            "status": "new_city", "existing_city_id": None,
+            "english_name": "Hukvaldy", "local_name": "Hukvaldy",
+            "country_code": "CZ", "external_id": "3074729",
+            "raw_value_type": "legitimate_name",
+            "source_url": "https://www.geonames.org/3074729/hukvaldy.html",
+            "evidence": "The event page identifies Hukvaldy.",
+        }
+
+        with patch.object(
+            analyzer,
+            "fetch_geonames_record",
+            side_effect=ValueError("GeoNames unavailable"),
+        ):
+            accepted = analyzer.validate_location_resolution(conn, concert, proposal)
+
+        self.assertIsNone(accepted)
+        conn.cursor.assert_not_called()
 
     def test_new_city_insert_uses_geonames_id_conflict_target(self):
         cursor = MagicMock()
