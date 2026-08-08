@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, Sandbox
 
 from agent_utils.concert_catalog import normalize
+from agent_utils.geonames import fetch_geonames_record, validate_geonames_city
 from automation.codex_auth import (
     CodexAuthRequiredError,
     raise_for_codex_auth,
@@ -723,12 +724,25 @@ def validate_location_resolution(
         if status == "existing_city":
             city_id = proposal.get("existing_city_id")
             with conn.cursor() as cursor:
-                cursor.execute("SELECT english_name, local_name, country_code FROM city WHERE id = %s", (city_id,))
+                cursor.execute(
+                    "SELECT english_name, local_name, country_code, external_id "
+                    "FROM city WHERE id = %s",
+                    (city_id,),
+                )
                 row = cursor.fetchone()
             if row is None:
                 raise ValueError("unknown existing city ID")
             if row[2] != country:
                 raise ValueError("city and country conflict")
+            record = fetch_geonames_record(row[3])
+            validate_geonames_city(
+                record,
+                country_code=country,
+                proposed_names=(row[0], row[1]),
+                legitimate_raw_name=(
+                    concert.city_raw if raw_type == "legitimate_name" else None
+                ),
+            )
             return {"status": status, "city_id": city_id, "country_code": country, "raw_value_type": raw_type, "source_url": source_url, "evidence": evidence}
         if status != "new_city":
             raise ValueError("unsupported location status")
@@ -749,6 +763,15 @@ def validate_location_resolution(
             )
         ):
             raise ValueError("new city source URL must match its GeoNames ID")
+        record = fetch_geonames_record(values["external_id"])
+        validate_geonames_city(
+            record,
+            country_code=country,
+            proposed_names=(values["english_name"], values["local_name"]),
+            legitimate_raw_name=(
+                concert.city_raw if raw_type == "legitimate_name" else None
+            ),
+        )
         with conn.cursor() as cursor:
             cursor.execute(
                 "SELECT id, country_code FROM city WHERE external_id = %s",
