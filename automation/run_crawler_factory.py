@@ -1208,16 +1208,8 @@ def run_factory(args: argparse.Namespace, registry: CrawlerRegistry) -> None:
         ).stdout.strip()
         registry.mark_pr_open(run_id, successful_source_ids, pr_url)
         registry.finish_run(run_id, "pr_open", pull_request_url=pr_url)
-        try:
-            run_command(
-                ["gh", "pr", "merge", pr_url, "--auto", "--squash", "--delete-branch"],
-                cwd=workspace,
-            )
-        except Exception:
-            registry.transition_sources(successful_source_ids, "needs_attention")
-            raise
         logger.info(
-            "Opened auto-merge pull request",
+            "Opened crawler-factory pull request",
             extra={"event": "factory_pull_request_opened", "pull_request_url": pr_url},
         )
         write_supervisor_result(

@@ -15,7 +15,8 @@ package checksums together in `Dockerfile.crawler-factory`.
 
 Each batch clones `master` into a temporary directory, atomically claims at
 most five due sources from PostgreSQL, commits generated `main.py` or
-`BLOCKED.md` results, opens one pull request, and enables squash auto-merge.
+`BLOCKED.md` results, and opens one pull request. The supervisor waits for the
+required checks and then submits a guarded synchronous squash merge.
 Codex runs with full filesystem access inside the dedicated worker container and
 its disposable clone. The worker passes only an allow-listed child environment,
 rejects changes outside the assigned crawler directory, resets failed attempts,
@@ -53,21 +54,29 @@ In scheduled mode the supervisor stores `last_factory_attempt_date` in
 at `06:00` in `Europe/Prague` by default.
 
 The batch runs as a synchronous child process. When a batch opens a pull request,
-the supervisor persists its URL and the exact `master` SHA cloned by the batch.
+it immediately returns the URL and exact `master` SHA cloned by the batch so the
+supervisor can persist them before any merge attempt.
 It will not start another batch while that pull request remains open. If
 `master` advances at any point, the supervisor uses `gh pr update-branch` to
 merge the new base into its own `crawler-factory/*` branch. Both required checks
-then run again against the updated head before auto-merge can proceed. The
-supervisor refuses to modify unexpected repositories or branch names.
+then run again against the updated head. Once `test` and
+`crawler-factory-validation` are complete and successful and GitHub reports the
+PR clean and mergeable, the supervisor runs `gh pr merge --squash
+--delete-branch --match-head-commit <head-sha>`. It never uses `--admin`, so the
+repository ruleset remains authoritative. The supervisor refuses to modify
+unexpected repositories or branch names.
 
 Pending, missing, successful, or failed checks all retain the gate. Failed
 branch updates preserve the PR and generated commits and retry with exponential
 backoff capped by the normal 15-minute failure interval. A genuine merge
 conflict therefore pauses the factory for manual resolution instead of
 discarding or regenerating crawler work. The URL, synchronized base SHA, and
-retry state survive container restarts. A merged pull request is classified by
-the existing update check before work resumes; a pull request closed without
-merging clears the gate and is left to the existing source reconciliation flow.
+retry state survive container restarts. Synchronous merge failures use the same
+bounded exponential backoff and retain the exact observed head SHA; a changed
+head must pass fresh checks before another guarded merge. A merged pull request
+is classified by the existing update check before work resumes; a pull request
+closed without merging clears the gate and is left to the existing source
+reconciliation flow.
 
 Before starting another batch,
 the supervisor compares the latest unclassified `master` SHA with the previous
@@ -231,15 +240,16 @@ starts immediately.
 
 ## GitHub settings
 
-Protect `master`, disallow force pushes and direct worker pushes, enable
-auto-merge, and require the `crawler-factory-validation` check. No approving
-review is required for factory PRs.
+Protect `master`, disallow force pushes and direct worker pushes, and require
+the `test` and `crawler-factory-validation` checks. No approving review is
+required for factory PRs. Repository auto-merge is not required.
 
 The worker token must be able to push `crawler-factory/*` branches and create
 and merge pull requests, but it must not bypass the `master` ruleset. The first
 authenticated batch calls `gh auth setup-git`, pushes a
-`crawler-factory/YYYY-MM-DD-<run-id>` branch, creates a PR, and requests squash
-auto-merge with branch deletion.
+`crawler-factory/YYYY-MM-DD-<run-id>` branch, and creates a PR. The supervisor
+submits the guarded squash merge with branch deletion after the required checks
+pass.
 
 When that PR merges, `master` changes. The idle supervisor notices the new SHA
 on its next check, calls the private CapRover webhook, and CapRover replaces the
