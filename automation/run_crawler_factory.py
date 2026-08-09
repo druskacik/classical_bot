@@ -939,6 +939,30 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def persist_failure_cleanup(
+    registry: CrawlerRegistry,
+    run_id: str,
+    *,
+    run_created: bool,
+    auth_reason_code: str | None,
+    successful_source_ids: list[int],
+) -> None:
+    try:
+        if auth_reason_code and successful_source_ids:
+            registry.transition_sources(successful_source_ids, "needs_attention")
+        if run_created:
+            registry.finish_run(run_id, "failed")
+    except Exception:
+        logger.exception(
+            "Could not persist crawler-factory failure cleanup",
+            extra={
+                "event": "factory_database_cleanup_failed",
+                "component": "crawler-factory",
+                "run_id": run_id,
+            },
+        )
+
+
 def run_factory(args: argparse.Namespace, registry: CrawlerRegistry) -> None:
     if args.max_urls < 1:
         raise SystemExit("--max-urls must be at least 1")
@@ -1225,10 +1249,13 @@ def run_factory(args: argparse.Namespace, registry: CrawlerRegistry) -> None:
         )
         supervisor_result_written = True
     except Exception:
-        if auth_reason_code and successful_source_ids:
-            registry.transition_sources(successful_source_ids, "needs_attention")
-        if run_created:
-            registry.finish_run(run_id, "failed")
+        persist_failure_cleanup(
+            registry,
+            run_id,
+            run_created=run_created,
+            auth_reason_code=auth_reason_code,
+            successful_source_ids=successful_source_ids,
+        )
         if not supervisor_result_written:
             write_supervisor_result(
                 args.result_path,

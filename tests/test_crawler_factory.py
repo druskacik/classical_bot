@@ -7,7 +7,9 @@ import unittest
 from types import SimpleNamespace
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import psycopg2
 
 import automation.run_crawler_factory as factory
 from automation.crawler_registry import normalize_source_url, normalized_crawler_path
@@ -71,6 +73,27 @@ class SupervisorResultTests(unittest.TestCase):
         self.assertEqual(result["status"], "pr_open")
         self.assertEqual(result["base_commit_sha"], "a" * 40)
         self.assertEqual(result["pull_request_url"], "https://example.test/pr/1")
+
+    def test_database_cleanup_failure_does_not_interrupt_local_result_handling(self):
+        registry = SimpleNamespace(
+            transition_sources=Mock(),
+            finish_run=Mock(side_effect=psycopg2.InterfaceError("closed")),
+        )
+
+        with self.assertLogs(factory.logger, level="ERROR") as captured:
+            factory.persist_failure_cleanup(
+                registry,
+                "run-1",
+                run_created=True,
+                auth_reason_code=None,
+                successful_source_ids=[],
+            )
+
+        registry.finish_run.assert_called_once_with("run-1", "failed")
+        self.assertIn(
+            "Could not persist crawler-factory failure cleanup",
+            "\n".join(captured.output),
+        )
 
 
 class BlockedMetadataTests(unittest.TestCase):
