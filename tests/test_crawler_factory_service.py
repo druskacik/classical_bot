@@ -492,14 +492,154 @@ class FactoryServiceTests(unittest.TestCase):
 
         self.assertIn("pending_factory_pr_url", supervisor.state)
 
+    def test_ready_pull_request_is_merged_with_observed_head_guard(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            supervisor = service.FactoryService(self.config(Path(temporary)))
+            pr_url = "https://github.com/example/repository/pull/1"
+            supervisor.remember_pending_pull_request(pr_url, NEW_SHA)
+            response = Mock(stdout=json.dumps({
+                "state": "OPEN", "mergedAt": None, "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [
+                    {
+                        "name": "test", "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                    {
+                        "name": "crawler-factory-validation", "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                ],
+                "baseRefName": "master", "baseRefOid": NEW_SHA,
+                "headRefName": "crawler-factory/2026-08-09-example",
+                "headRefOid": HEAD_SHA, "isCrossRepository": False,
+            }))
+            with patch.object(
+                service.subprocess,
+                "run",
+                side_effect=[response, Mock()],
+            ) as run:
+                self.assertTrue(supervisor.pending_pull_request_is_open())
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "gh", "pr", "merge", pr_url, "--squash", "--delete-branch",
+                "--match-head-commit", HEAD_SHA,
+            ],
+        )
+        self.assertNotIn("pending_factory_pr_merge_retry_at", supervisor.state)
+
+    def test_missing_required_check_does_not_merge_pull_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            supervisor = service.FactoryService(self.config(Path(temporary)))
+            supervisor.remember_pending_pull_request(
+                "https://github.com/example/repository/pull/1", NEW_SHA
+            )
+            response = Mock(stdout=json.dumps({
+                "state": "OPEN", "mergedAt": None, "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [
+                    {
+                        "name": "test", "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                ],
+                "baseRefName": "master", "baseRefOid": NEW_SHA,
+                "headRefName": "crawler-factory/2026-08-09-example",
+                "headRefOid": HEAD_SHA, "isCrossRepository": False,
+            }))
+            with patch.object(service.subprocess, "run", return_value=response) as run:
+                self.assertTrue(supervisor.pending_pull_request_is_open())
+
+        run.assert_called_once()
+
+    def test_failed_merge_is_backed_off_and_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            supervisor = service.FactoryService(self.config(Path(temporary)))
+            pr_url = "https://github.com/example/repository/pull/1"
+            supervisor.remember_pending_pull_request(pr_url, NEW_SHA)
+            response = Mock(stdout=json.dumps({
+                "state": "OPEN", "mergedAt": None, "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [
+                    {
+                        "name": "test", "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                    {
+                        "name": "crawler-factory-validation", "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                ],
+                "baseRefName": "master", "baseRefOid": NEW_SHA,
+                "headRefName": "crawler-factory/2026-08-09-example",
+                "headRefOid": HEAD_SHA, "isCrossRepository": False,
+            }))
+            failure = subprocess.CalledProcessError(
+                1, ["gh"], stderr="temporary GitHub failure"
+            )
+            with patch.object(
+                service.subprocess,
+                "run",
+                side_effect=[response, failure, response],
+            ) as run:
+                self.assertTrue(supervisor.pending_pull_request_is_open())
+                self.assertTrue(supervisor.pending_pull_request_is_open())
+            restarted = service.FactoryService(self.config(Path(temporary)))
+
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(supervisor.state["pending_factory_pr_merge_head_sha"], HEAD_SHA)
+        self.assertEqual(supervisor.state["pending_factory_pr_merge_attempts"], 1)
+        self.assertIn("pending_factory_pr_merge_retry_at", supervisor.state)
+        self.assertEqual(restarted.state["pending_factory_pr_merge_head_sha"], HEAD_SHA)
+
+    def test_changed_head_clears_merge_retry_before_rechecking(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            supervisor = service.FactoryService(self.config(Path(temporary)))
+            supervisor.remember_pending_pull_request(
+                "https://github.com/example/repository/pull/1", NEW_SHA
+            )
+            supervisor.state.update({
+                "pending_factory_pr_merge_head_sha": "d" * 40,
+                "pending_factory_pr_merge_attempts": 2,
+                "pending_factory_pr_merge_retry_at": "2099-01-01T00:00:00+00:00",
+            })
+            response = Mock(stdout=json.dumps({
+                "state": "OPEN", "mergedAt": None, "mergeable": "MERGEABLE",
+                "mergeStateStatus": "BLOCKED",
+                "statusCheckRollup": [
+                    {"name": "test", "status": "IN_PROGRESS", "conclusion": ""},
+                ],
+                "baseRefName": "master", "baseRefOid": NEW_SHA,
+                "headRefName": "crawler-factory/2026-08-09-example",
+                "headRefOid": HEAD_SHA, "isCrossRepository": False,
+            }))
+            with patch.object(service.subprocess, "run", return_value=response):
+                self.assertTrue(supervisor.pending_pull_request_is_open())
+
+        self.assertNotIn("pending_factory_pr_merge_head_sha", supervisor.state)
+        self.assertNotIn("pending_factory_pr_merge_retry_at", supervisor.state)
+
     def test_pending_pull_request_is_updated_when_master_advances(self):
         with tempfile.TemporaryDirectory() as temporary:
             supervisor = service.FactoryService(self.config(Path(temporary)))
             pr_url = "https://github.com/example/repository/pull/1"
             supervisor.remember_pending_pull_request(pr_url, OLD_SHA)
             response = Mock(stdout=json.dumps({
-                "state": "OPEN", "mergedAt": None, "mergeStateStatus": "BEHIND",
-                "statusCheckRollup": [], "baseRefName": "master",
+                "state": "OPEN", "mergedAt": None, "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [
+                    {
+                        "name": "test", "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                    {
+                        "name": "crawler-factory-validation", "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                    },
+                ], "baseRefName": "master",
                 "baseRefOid": NEW_SHA,
                 "headRefName": "crawler-factory/2026-08-07-example",
                 "headRefOid": HEAD_SHA, "isCrossRepository": False,

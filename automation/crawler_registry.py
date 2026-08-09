@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ import psycopg2
 from psycopg2.extras import Json, RealDictCursor
 
 
+logger = logging.getLogger(__name__)
 DUE_STATUSES = ("pending", "retry_wait", "blocked")
 GEOGRAPHIC_SCOPES = {"unknown", "country", "multi_country"}
 PROTECTED_IDENTITY_STATUSES = {
@@ -33,6 +35,10 @@ def get_connection():
         password=os.getenv("DB_PASS"),
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
+        keepalives=1,
+        keepalives_idle=60,
+        keepalives_interval=20,
+        keepalives_count=3,
     )
 
 
@@ -87,8 +93,11 @@ def normalized_geographic_identity(
 
 
 class CrawlerRegistry:
-    def __init__(self, connection=None) -> None:
-        self.connection = connection or get_connection()
+    def __init__(self, connection=None, *, connection_factory=None) -> None:
+        self._connection_factory = connection_factory or get_connection
+        self.connection = (
+            connection if connection is not None else self._connection_factory()
+        )
         self._owns_connection = connection is None
 
     def close(self) -> None:
@@ -101,9 +110,34 @@ class CrawlerRegistry:
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
 
+    def _reconnect(self) -> None:
+        try:
+            self.connection.close()
+        except Exception:
+            pass
+        self.connection = self._connection_factory()
+        logger.warning(
+            "Reconnected crawler-factory database connection",
+            extra={
+                "event": "factory_database_reconnected",
+                "component": "crawler-factory",
+            },
+        )
+
+    def _open_cursor(self):
+        if self._owns_connection and self.connection.closed:
+            self._reconnect()
+        try:
+            return self.connection.cursor(cursor_factory=RealDictCursor)
+        except (psycopg2.InterfaceError, psycopg2.OperationalError):
+            if not self._owns_connection:
+                raise
+            self._reconnect()
+            return self.connection.cursor(cursor_factory=RealDictCursor)
+
     @contextmanager
     def cursor(self) -> Iterator:
-        with self.connection.cursor(cursor_factory=RealDictCursor) as cursor:
+        with self._open_cursor() as cursor:
             yield cursor
 
     def preflight(self) -> int:

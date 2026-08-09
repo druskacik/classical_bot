@@ -31,6 +31,7 @@ from deployment.caprover_updater import (
 
 DEFAULT_SERVICE_STATE_PATH = Path("/var/lib/crawler-factory/service-state.json")
 DEFAULT_REPOSITORY = "https://github.com/druskacik/classical_bot.git"
+REQUIRED_FACTORY_CHECKS = frozenset({"crawler-factory-validation", "test"})
 CONTINUOUS_MODE = "continuous"
 SCHEDULED_MODE = "scheduled"
 logger = logging.getLogger(__name__)
@@ -68,6 +69,14 @@ def log(message: str) -> None:
         event = "factory_pr_update_conflict"
     elif message.startswith("Could not check crawler-factory pull request"):
         event = "factory_pr_check_failed"
+    elif message.startswith("Crawler-factory pull request is ready to merge"):
+        event = "factory_pr_ready"
+    elif message.startswith("Merging crawler-factory pull request"):
+        event = "factory_pr_merge_started"
+    elif message.startswith("Submitted crawler-factory pull request merge"):
+        event = "factory_pr_merge_succeeded"
+    elif message.startswith("Could not merge crawler-factory pull request"):
+        event = "factory_pr_merge_failed"
     elif message.startswith("Crawler-only master update"):
         event = "factory_crawler_only_update"
     elif message.startswith("Factory-relevant master update"):
@@ -474,6 +483,7 @@ class FactoryService:
         else:
             self.state.pop("pending_factory_pr_base_sha", None)
         self._clear_pending_pr_update_retry()
+        self._clear_pending_pr_merge_retry()
         self.updater.save_state()
         self._last_pending_pr_observation = None
 
@@ -484,6 +494,9 @@ class FactoryService:
             "pending_factory_pr_update_base_sha",
             "pending_factory_pr_update_attempts",
             "pending_factory_pr_update_retry_at",
+            "pending_factory_pr_merge_head_sha",
+            "pending_factory_pr_merge_attempts",
+            "pending_factory_pr_merge_retry_at",
         ):
             self.state.pop(key, None)
         self.updater.save_state()
@@ -493,6 +506,91 @@ class FactoryService:
         self.state.pop("pending_factory_pr_update_base_sha", None)
         self.state.pop("pending_factory_pr_update_attempts", None)
         self.state.pop("pending_factory_pr_update_retry_at", None)
+
+    def _clear_pending_pr_merge_retry(self) -> None:
+        self.state.pop("pending_factory_pr_merge_head_sha", None)
+        self.state.pop("pending_factory_pr_merge_attempts", None)
+        self.state.pop("pending_factory_pr_merge_retry_at", None)
+
+    def _pending_pr_merge_is_due(self, head_sha: str, now: datetime) -> bool:
+        if self.state.get("pending_factory_pr_merge_head_sha") != head_sha:
+            return True
+        try:
+            retry_at = datetime.fromisoformat(
+                str(self.state["pending_factory_pr_merge_retry_at"])
+            )
+        except (KeyError, TypeError, ValueError):
+            return True
+        return retry_at.tzinfo is None or now >= retry_at
+
+    def _record_pending_pr_merge_failure(
+        self,
+        head_sha: str,
+        now: datetime,
+    ) -> int:
+        if self.state.get("pending_factory_pr_merge_head_sha") == head_sha:
+            attempts = int(self.state.get("pending_factory_pr_merge_attempts", 0)) + 1
+        else:
+            attempts = 1
+        delay = min(
+            self.config.pr_poll_interval_seconds * (2 ** min(attempts - 1, 10)),
+            self.config.failure_backoff_seconds,
+        )
+        self.state["pending_factory_pr_merge_head_sha"] = head_sha
+        self.state["pending_factory_pr_merge_attempts"] = attempts
+        self.state["pending_factory_pr_merge_retry_at"] = (
+            now + timedelta(seconds=delay)
+        ).isoformat()
+        self.updater.save_state()
+        return delay
+
+    def _merge_pending_pull_request(
+        self,
+        pull_request_url: str,
+        head_sha: str,
+    ) -> None:
+        now = datetime.now(UTC)
+        if not self._pending_pr_merge_is_due(head_sha, now):
+            return
+        log(
+            f"Crawler-factory pull request is ready to merge: "
+            f"{pull_request_url} at head {head_sha[:12]}"
+        )
+        log(
+            f"Merging crawler-factory pull request {pull_request_url} "
+            f"at head {head_sha[:12]}"
+        )
+        try:
+            subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "merge",
+                    pull_request_url,
+                    "--squash",
+                    "--delete-branch",
+                    "--match-head-commit",
+                    head_sha,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except Exception as exc:
+            delay = self._record_pending_pr_merge_failure(head_sha, now)
+            log(
+                f"Could not merge crawler-factory pull request {pull_request_url}: "
+                f"{type(exc).__name__}: {command_error_detail(exc)}; "
+                f"retrying in {delay // 60} minutes"
+            )
+            return
+        self._clear_pending_pr_merge_retry()
+        self.updater.save_state()
+        log(
+            f"Submitted crawler-factory pull request merge: {pull_request_url} "
+            f"at head {head_sha[:12]}"
+        )
 
     def _pending_pr_update_is_due(self, base_sha: str, now: datetime) -> bool:
         if self.state.get("pending_factory_pr_update_base_sha") != base_sha:
@@ -564,6 +662,7 @@ class FactoryService:
             return
         self.state["pending_factory_pr_base_sha"] = base_sha
         self._clear_pending_pr_update_retry()
+        self._clear_pending_pr_merge_retry()
         self.updater.save_state()
         self._last_pending_pr_observation = None
         log(
@@ -589,7 +688,7 @@ class FactoryService:
                     "view",
                     str(pull_request_url),
                     "--json",
-                    "state,mergedAt,mergeStateStatus,statusCheckRollup,"
+                    "state,mergedAt,mergeable,mergeStateStatus,statusCheckRollup,"
                     "baseRefName,baseRefOid,headRefName,headRefOid,isCrossRepository",
                 ],
                 check=True,
@@ -631,10 +730,13 @@ class FactoryService:
                 str(payload.get("baseRefOid") or ""),
                 "pull request base SHA",
             )
-            normalize_commit_sha(
+            head_sha = normalize_commit_sha(
                 str(payload.get("headRefOid") or ""),
                 "pull request head SHA",
             )
+            if self.state.get("pending_factory_pr_merge_head_sha") not in (None, head_sha):
+                self._clear_pending_pr_merge_retry()
+                self.updater.save_state()
             known_base_sha = self.state.get("pending_factory_pr_base_sha")
             if known_base_sha is None:
                 merge_state = str(
@@ -642,6 +744,7 @@ class FactoryService:
                 ).upper()
                 if merge_state == "BEHIND":
                     self._update_pending_pull_request(str(pull_request_url), base_sha)
+                    return True
                 else:
                     self.state["pending_factory_pr_base_sha"] = base_sha
                     self.updater.save_state()
@@ -650,6 +753,7 @@ class FactoryService:
                 "pending pull request base SHA",
             ) != base_sha:
                 self._update_pending_pull_request(str(pull_request_url), base_sha)
+                return True
             checks = payload.get("statusCheckRollup") or []
             conclusions = sorted(
                 str(check.get("conclusion") or check.get("state") or "PENDING").upper()
@@ -668,6 +772,25 @@ class FactoryService:
                     f"(merge state: {observation[1]}; checks: {check_summary})"
                 )
                 self._last_pending_pr_observation = observation
+            checks_by_name = {
+                str(check.get("name") or ""): (
+                    str(check.get("status") or "").upper(),
+                    str(check.get("conclusion") or check.get("state") or "").upper(),
+                )
+                for check in checks
+                if isinstance(check, dict)
+            }
+            required_checks_succeeded = all(
+                checks_by_name.get(name) == ("COMPLETED", "SUCCESS")
+                for name in REQUIRED_FACTORY_CHECKS
+            )
+            ready_to_merge = (
+                str(payload.get("mergeable") or "UNKNOWN").upper() == "MERGEABLE"
+                and str(payload.get("mergeStateStatus") or "UNKNOWN").upper() == "CLEAN"
+                and required_checks_succeeded
+            )
+            if ready_to_merge:
+                self._merge_pending_pull_request(str(pull_request_url), head_sha)
             return True
         except Exception as exc:
             detail = command_error_detail(exc)
