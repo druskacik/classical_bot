@@ -8,9 +8,10 @@ The repository deploys two independent CapRover services:
 
 - `classical-bot` is the normal concert pipeline. It is built from the default
   `Dockerfile`, applies database migrations, and starts `python main.py`. The
-  app supervises the daily crawler/classifier scheduler and a continuous
-  programme analyzer as independent components, so scraping does not wait for
-  programme extraction. Its persistent runtime state is stored under
+  app supervises the daily crawler scheduler and two independent Codex workers:
+  continuous programme extraction and, when enabled, source-by-source
+  potential-event classification. Scraping does not wait for either analyzer.
+  Its persistent runtime state is stored under
   `/var/lib/classical-bot`.
 - `classical-crawler-factory` creates and validates crawler changes with Codex.
   Its CapRover deployment uses `captain-definition-crawler-factory`, which
@@ -59,9 +60,10 @@ seed, mount one credential directory into multiple running services, print
 `auth.json`, or store it in the repository or logs. See
 `automation/README.md` for the factory-specific authentication procedure.
 
-If a Codex request reports revoked or missing authentication, programme
-analysis stops immediately without consuming concert attempts. The daily
-crawler and Gemini-classifier scheduler continues. The pause survives restarts
+If a Codex request reports revoked or missing authentication, the affected
+Codex analyzer stops immediately without consuming attempts. The daily crawler
+scheduler continues. Both analyzers share the same persistent authentication
+pause, which survives restarts
 at `/var/lib/classical-bot/codex-auth-required.json` and emits
 `codex_auth_pause_active` once per minute for alerting.
 
@@ -88,6 +90,19 @@ minutes; stalled batch processes are terminated without stopping the daily
 scraper scheduler. Deployments normally wait for the active analyzer batch to
 finish, with a one-hour maximum drain period.
 
+Potential-event classification is disabled by default until its migration and
+credentials are deployed. Set `POTENTIAL_EVENT_CLASSIFIER_ENABLED=true` to run
+it continuously. Each child run takes one source, snapshots its eligible
+unclassified current/future events, and reuses one Codex thread across bounded
+pages. Classical results are promoted, nonclassical results are retained as
+decisions, and genuinely ambiguous events remain `uncertain` for a later retry.
+Use `uv run python -m analyzers.analyze_potential_events --include-past` for a
+read-only historical preview, adding `--commit` only for an intentional backlog
+run. Musical theatre is judged by musical substance rather than its label:
+classically substantial works and concert/orchestral presentations such as
+Bernstein's *West Side Story* are eligible; routine commercial productions
+without a meaningful classical connection are not.
+
 Structure:
 
 `crawlers/{country_code}/` - crawlers for given country
@@ -106,6 +121,7 @@ HTTP_PROXY=
 HTTPS_PROXY=
 PYTHONUNBUFFERED=1
 RUN_JOBS_ON_STARTUP=false
+POTENTIAL_EVENT_CLASSIFIER_ENABLED=false
 ```
 
 # Run crawlers

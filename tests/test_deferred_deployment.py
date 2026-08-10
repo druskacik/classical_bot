@@ -96,6 +96,30 @@ class DeferredDeploymentTests(unittest.TestCase):
 
             self.assertTrue(worker_stop.is_set())
 
+    def test_drain_deadline_stops_both_analyzer_workers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            coordinator = deferred.DeferredDeploymentCoordinator(
+                self.config(Path(temporary), drain_timeout_seconds=60)
+            )
+            coordinator.pending_event.set()
+            coordinator.pending_since = 100
+            shutdown = threading.Event()
+            programme_stop = threading.Event()
+            classifier_stop = threading.Event()
+
+            def stop_monitor(_seconds):
+                shutdown.set()
+                return True
+
+            with (
+                patch.object(deferred, "monotonic", return_value=161),
+                patch.object(shutdown, "wait", side_effect=stop_monitor),
+            ):
+                coordinator.monitor(shutdown, [programme_stop, classifier_stop])
+
+            self.assertTrue(programme_stop.is_set())
+            self.assertTrue(classifier_stop.is_set())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -53,9 +53,6 @@ def scheduler_main() -> None:
     # Discover all crawler modules
     crawler_functions = discover_crawler_modules()
     
-    # Classify broad-source potential events after the crawlers.
-    from analyzers.analyze_potential_events import main as analyze_potential_events_main
-    crawler_functions.append(analyze_potential_events_main)
     updater = ScraperUpdater(UpdaterConfig.from_environment())
     
     if should_run_jobs_on_startup():

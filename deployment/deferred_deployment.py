@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
+from typing import Iterable
 
 from deployment.caprover_updater import CapRoverUpdater, CapRoverUpdaterConfig
 from deployment.scraper_updater import DEFAULT_REQUEST_PATH
@@ -103,7 +104,7 @@ class DeferredDeploymentCoordinator:
                 self.pending_event.set()
                 self.config.request_path.unlink(missing_ok=True)
                 log(
-                    "Update found; draining programme analysis before deploying "
+                    "Update found; draining Codex analysis before deploying "
                     f"{update[:12]}"
                 )
             elif self.updater.last_check_conclusive:
@@ -114,8 +115,13 @@ class DeferredDeploymentCoordinator:
     def monitor(
         self,
         shutdown_event: threading.Event,
-        worker_stop_event: threading.Event,
+        worker_stop_events: threading.Event | Iterable[threading.Event],
     ) -> None:
+        stop_events = (
+            [worker_stop_events]
+            if isinstance(worker_stop_events, threading.Event)
+            else list(worker_stop_events)
+        )
         next_check_at = 0.0
         deadline_logged = False
         while not shutdown_event.is_set():
@@ -127,15 +133,16 @@ class DeferredDeploymentCoordinator:
                 self.pending_event.is_set()
                 and self.pending_since is not None
                 and monotonic() - self.pending_since >= self.config.drain_timeout_seconds
-                and not worker_stop_event.is_set()
+                and any(not event.is_set() for event in stop_events)
             ):
                 if not deadline_logged:
                     log(
                         "Deployment drain deadline reached; interrupting the active "
-                        "programme analysis batch"
+                        "Codex analysis batches"
                     )
                     deadline_logged = True
-                worker_stop_event.set()
+                for event in stop_events:
+                    event.set()
             shutdown_event.wait(1)
 
     def request_deployment(self) -> bool:

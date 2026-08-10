@@ -111,6 +111,90 @@ class PotentialEvent(Base):
     composers = Column(ARRAY(Text))
 
 
+class PotentialEventClassificationRun(Base):
+    __tablename__ = "potential_event_classification_run"
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('future', 'all')",
+            name="ck_potential_event_classification_run_scope",
+        ),
+        CheckConstraint(
+            "status IN ('running', 'completed', 'partial', 'failed')",
+            name="ck_potential_event_classification_run_status",
+        ),
+        Index(
+            "ix_potential_event_classification_run_source",
+            "source",
+            "source_url",
+            "started_at",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    source = Column(Text)
+    source_url = Column(Text)
+    scope = Column(String, nullable=False)
+    status = Column(String, nullable=False, server_default="running")
+    thread_id = Column(Text)
+    model = Column(String, nullable=False)
+    snapshot_count = Column(Integer, nullable=False, server_default="0")
+    classified_count = Column(Integer, nullable=False, server_default="0")
+    uncertain_count = Column(Integer, nullable=False, server_default="0")
+    error_count = Column(Integer, nullable=False, server_default="0")
+    findings = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    last_error = Column(Text)
+    started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    finished_at = Column(DateTime(timezone=True))
+
+
+class PotentialEventClassification(Base):
+    __tablename__ = "potential_event_classification"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('classified', 'uncertain', 'error', 'failed')",
+            name="ck_potential_event_classification_status",
+        ),
+        CheckConstraint(
+            "(status = 'classified' AND is_classical IS NOT NULL) OR "
+            "(status <> 'classified' AND is_classical IS NULL)",
+            name="ck_potential_event_classification_decision",
+        ),
+        CheckConstraint(
+            "attempts >= 0",
+            name="ck_potential_event_classification_attempts",
+        ),
+        Index(
+            "ix_potential_event_classification_due",
+            "status",
+            "next_attempt_at",
+            "attempts",
+        ),
+        Index("ix_potential_event_classification_run", "latest_run_id"),
+    )
+
+    potential_event_id = Column(
+        Integer,
+        ForeignKey("potential_event.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    latest_run_id = Column(
+        BigInteger,
+        ForeignKey("potential_event_classification_run.id", ondelete="SET NULL"),
+    )
+    status = Column(String, nullable=False)
+    is_classical = Column(Boolean)
+    category = Column(String)
+    rationale = Column(Text)
+    evidence_urls = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    attempts = Column(Integer, nullable=False, server_default="0")
+    model = Column(String)
+    last_error = Column(Text)
+    last_attempted_at = Column(DateTime(timezone=True))
+    next_attempt_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class City(Base):
     __tablename__ = "city"
     __table_args__ = (

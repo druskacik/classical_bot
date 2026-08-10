@@ -36,7 +36,8 @@ defensibly inferred, skip that event instead of returning an invalid record.
 Decide whether the source is classical-only or broad. A classical-only source
 may use the default `upload_target='classical'`. A mixed theatre, festival,
 ticketing, or general cultural source must set `CrawlerConfig.upload_target` to
-`potential` so Gemini classifies the events before they reach classical_concert.
+`potential` so the Codex potential-event classifier reviews the events before
+they reach `classical_concert`.
 Do not upload every event from a mixed source directly as classical music.
 
 What I mean by description: description is a long body of text related to the concert. It can be large and unstructured, and it's important that it includes details about which composers and works are being played (if this is on the website, of course). The reasoning behind this is that the description will be later parsed by AI to extract composers and works.
