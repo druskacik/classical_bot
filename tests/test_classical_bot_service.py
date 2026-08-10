@@ -46,6 +46,22 @@ class ClassicalBotServiceTests(unittest.TestCase):
         self.assertTrue(worker.stop_event.is_set())
         killpg.assert_called_once_with(321, signal.SIGTERM)
 
+    def test_shutdown_signal_stops_both_analyzer_workers(self):
+        worker = self.worker()
+        classifier = self.worker()
+        service = service_module.ClassicalBotService(
+            worker,
+            self.deployment(),
+            classifier,
+        )
+        service.scheduler = MagicMock(pid=321)
+        service.scheduler.poll.return_value = None
+        with patch.object(service_module.os, "killpg"):
+            service.stop(signal.SIGTERM)
+
+        self.assertTrue(worker.stop_event.is_set())
+        self.assertTrue(classifier.stop_event.is_set())
+
     def test_unexpected_scheduler_exit_stops_analyzer(self):
         worker = self.worker()
         service = service_module.ClassicalBotService(worker, self.deployment())
@@ -123,6 +139,48 @@ class ClassicalBotServiceTests(unittest.TestCase):
             self.assertEqual(service.run(), 0)
 
         self.assertEqual(order, ["worker-drained", "deployment-requested"])
+
+    def test_deployment_waits_for_both_analyzer_workers(self):
+        order = []
+        worker = self.worker()
+        classifier = self.worker()
+        programme_can_drain = threading.Event()
+
+        def run_programme():
+            programme_can_drain.wait(timeout=1)
+            order.append("programme-drained")
+
+        def run_classifier():
+            order.append("classifier-drained")
+            programme_can_drain.set()
+
+        worker.run.side_effect = run_programme
+        classifier.run.side_effect = run_classifier
+        deployment = self.deployment()
+        deployment.pending_event.set()
+        service = service_module.ClassicalBotService(worker, deployment, classifier)
+        scheduler = MagicMock(pid=321)
+        scheduler.poll.return_value = 0
+
+        def start_scheduler():
+            service.scheduler = scheduler
+
+        def request_deployment():
+            order.append("deployment-requested")
+            service.shutdown_event.set()
+            return True
+
+        deployment.request_deployment.side_effect = request_deployment
+        with (
+            patch.object(service_module.signal, "signal"),
+            patch.object(service, "start_scheduler", side_effect=start_scheduler),
+        ):
+            self.assertEqual(service.run(), 0)
+
+        self.assertEqual(
+            order,
+            ["classifier-drained", "programme-drained", "deployment-requested"],
+        )
 
 
 if __name__ == "__main__":

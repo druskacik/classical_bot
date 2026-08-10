@@ -5,18 +5,18 @@ invokes a private Captain Webhook for newer commits, persists successful
 requests, and keeps failed checks retryable. The crawler factory and normal
 scraper runner apply their own scheduling guards around this shared mechanism.
 
-After the daily crawlers and potential-event classifier have returned, the
-scheduler writes a persistent update-check request. The parent process checks
+After the daily crawlers have returned, the scheduler writes a persistent
+update-check request. The parent process checks
 `master`; failed checks remain retryable every five minutes. A conclusive
 no-update result consumes the request and disables checks until the next daily
 pipeline finishes.
 
-The continuous programme analyzer is part of the same `classical-bot` app and
-does not perform its own update checks. When a newer commit is found, the parent
-lets the current analyzer batch finish and prevents another batch from starting.
-It invokes the deployment webhook only after the analyzer is drained. If the
-batch does not finish within one hour, the existing supervised shutdown safely
-interrupts it before deployment.
+The continuous programme analyzer and optional potential-event classifier are
+part of the same `classical-bot` app and do not perform their own update checks.
+When a newer commit is found, the parent lets both current Codex runs finish and
+prevents new work from starting. It invokes the deployment webhook only after
+both workers are drained. If either does not finish within one hour, supervised
+shutdown safely interrupts it before deployment.
 
 ## CapRover configuration
 
@@ -62,3 +62,16 @@ the combined runtime starts.
 | `CONCERT_PROGRAM_STALL_TIMEOUT_SECONDS` | `2400` | Kill a child with no group progress |
 | `CONCERT_PROGRAM_BATCH_TIMEOUT_SECONDS` | `72000` | Hard child-batch deadline |
 | `CONCERT_PROGRAM_DEPLOY_DRAIN_TIMEOUT_SECONDS` | `3600` | Maximum wait for a batch boundary before deployment |
+
+## Potential-event classifier
+
+The classifier is opt-in and processes one source snapshot per child process.
+Automatic runs select only current/future events; historical processing must be
+started explicitly with the analyzer CLI.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POTENTIAL_EVENT_CLASSIFIER_ENABLED` | `false` | Enable the continuous source classifier |
+| `POTENTIAL_EVENT_CLASSIFIER_IDLE_SECONDS` | `300` | Wait after draining the eligible queue |
+| `POTENTIAL_EVENT_CLASSIFIER_FAILURE_BACKOFF_SECONDS` | `900` | Wait after a fatal source run |
+| `POTENTIAL_EVENT_CLASSIFIER_TURN_TIMEOUT_SECONDS` | `1800` | Codex deadline per bounded source page; process guards are derived from it |

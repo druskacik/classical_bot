@@ -5,6 +5,8 @@ from .cities import clean_city_raw, resolve_city
 
 load_dotenv()
 
+CONCERT_INSERT_ADVISORY_LOCK = "classical-bot-classical-concert-insert"
+
 def upload_concerts(data: list[dict], table_name: str = 'classical_concert'):
     """
     Upload concerts to the database
@@ -17,6 +19,12 @@ def upload_concerts(data: list[dict], table_name: str = 'classical_concert'):
     
     conn = psycopg2.connect(dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST, port=DB_PORT)
     cursor = conn.cursor()
+
+    if table_name == 'classical_concert':
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (CONCERT_INSERT_ADVISORY_LOCK,),
+        )
     
     new_concerts = []
     skipped_count = 0

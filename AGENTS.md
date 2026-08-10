@@ -1,6 +1,6 @@
 ## Project Overview
 
-Data scraping pipeline for classical music events. Crawlers scrape concert listings from cultural websites, store them in a PostgreSQL database, use Gemini AI to classify broad-source events, and use the Codex SDK to extract concert programmes.
+Data scraping pipeline for classical music events. Crawlers scrape concert listings from cultural websites, store them in a PostgreSQL database, use the Codex SDK to classify broad-source events, and use Codex to extract concert programmes.
 
 ## Commands
 
@@ -12,7 +12,8 @@ uv run python main.py
 uv run python -m crawlers.sk.filharmonia_sk.main
 
 # Run a single analyzer
-uv run python -m analyzers.analyze_potential_events
+uv run python -m analyzers.analyze_potential_events              # dry run
+uv run python -m analyzers.analyze_potential_events --commit     # classify one source
 ```
 
 Package management uses `uv` (not pip) for local development. Exception:
@@ -30,7 +31,7 @@ testing.
 ### Pipeline flow
 
 1. **Crawlers** (`crawlers/<country_code>/<site>/main.py`) — Each crawler has a `main()` function that scrapes a specific website, saves results to `data/<site>.csv`, and uploads to the DB via `upload_concerts()`.
-2. **Analyzer: classify events** (`analyzers/analyze_potential_events.py`) — Uses Gemini to determine if events in the `potential_event` table are classical music, then copies confirmed ones to `classical_concert`.
+2. **Analyzer: classify events** (`analyzers/analyze_potential_events.py`) — Uses one persistent Codex thread per source to classify its unreviewed events in bounded pages, then copies confirmed ones to `classical_concert`. Automatic runs only consider current/future events; `--include-past` is an explicit backlog operation.
 3. **Analyzer: extract concert programmes** (`analyzers/analyze_concert_programs.py`) — Uses the Codex SDK to inspect concert sources, resolve composers and works, and populate the concert programme tables.
 
 ### Two upload paths
