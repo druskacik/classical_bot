@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 
@@ -30,6 +31,11 @@ NOT_EVENT_CATEGORY_ORDER = (
     "other_non_event",
 )
 UNCERTAIN_CATEGORY = "unclear"
+INCLUSION_GUIDANCE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "prompts"
+    / "event_inclusion_guidance.mustache"
+)
 
 INCLUSION_DECISIONS = ("classical", "nonclassical", "not_event", "uncertain")
 CLASSICAL_CATEGORIES = frozenset(CLASSICAL_CATEGORY_ORDER)
@@ -41,6 +47,10 @@ ALL_CATEGORIES = [
     *NOT_EVENT_CATEGORY_ORDER,
     UNCERTAIN_CATEGORY,
 ]
+
+
+def load_inclusion_guidance() -> str:
+    return INCLUSION_GUIDANCE_PATH.read_text(encoding="utf-8").strip()
 
 
 def validate_decision_category(decision: str, category: str) -> None:

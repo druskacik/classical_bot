@@ -25,6 +25,7 @@ from analyzers.event_inclusion import (
     NONCLASSICAL_CATEGORY_ORDER,
     NOT_EVENT_CATEGORY_ORDER,
     UNCERTAIN_CATEGORY,
+    load_inclusion_guidance,
     validate_decision_category,
 )
 from automation.codex_auth import CodexAuthRequiredError, raise_for_codex_auth
@@ -382,6 +383,7 @@ def render_prompt(
             "page_count": page_count,
             "event_count": sum(len(group.occurrences) for group in page),
             "candidate_json": json.dumps(values, ensure_ascii=False, indent=2),
+            "event_inclusion_guidance": load_inclusion_guidance(),
             "classical_categories": list(CLASSICAL_CATEGORY_ORDER),
             "nonclassical_categories": list(NONCLASSICAL_CATEGORY_ORDER),
             "not_event_categories": list(NOT_EVENT_CATEGORY_ORDER),

@@ -63,6 +63,32 @@ def no_program_group_result(concerts):
     }
 
 
+def complete_group_result(concerts, *, composer_id=1, work_id=10):
+    result = no_program_group_result(concerts)
+    composer = {
+        "existing_id": composer_id,
+        "name": "Wolfgang Amadeus Mozart",
+    }
+    result["programme_groups"][0].update(
+        status="complete",
+        notes="The programme names one work.",
+        composers=[composer],
+        program=[
+            {
+                "composer": composer,
+                "work": {
+                    "existing_id": work_id,
+                    "title": "Symphony No. 40",
+                    "catalogue_number": "K. 550",
+                },
+                "programme_label": "Symphony No. 40",
+                "evidence": "The published programme names the symphony.",
+            }
+        ],
+    )
+    return result
+
+
 class AnalyzeConcertProgramsTests(unittest.TestCase):
     def test_auth_failure_stops_group_without_persisting_concert_error(self):
         concert = analyzer.Concert(
@@ -149,6 +175,15 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         self.assertIn("season overview", prompt)
         self.assertIn("not_applicable", prompt)
         self.assertIn("Never use no_program as a proxy", prompt)
+        guidance = analyzer.load_inclusion_guidance()
+        self.assertEqual(prompt.count(guidance), 1)
+        normalized_prompt = " ".join(prompt.split())
+        self.assertIn("Named canonical repertoire is not required", normalized_prompt)
+        self.assertIn("billed symphonic collaborations with modern artists", normalized_prompt)
+        self.assertIn("Family and children's labels are neutral", normalized_prompt)
+        self.assertIn("contemporary dance or ballet", normalized_prompt)
+        self.assertIn("Seasonal concerts by", normalized_prompt)
+        self.assertIn("Vague marketing", normalized_prompt)
 
     def test_groups_by_source_normalized_title_and_source_url_without_size_cap(self):
         concerts = [
@@ -1365,6 +1400,192 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         self.assertEqual(result, valid)
         self.assertEqual(thread.turn.await_count, 2)
         self.assertIn("Validation error", thread.turn.await_args_list[1].args[0])
+
+    def test_catalogue_ownership_error_gets_same_thread_correction(self):
+        concert = analyzer.Concert(
+            1, "Symphony", date.today(), "https://example.test/1", None,
+            source="Example", source_url="https://example.test/series",
+        )
+        group = analyzer.group_concerts([concert])[0]
+        invalid = complete_group_result([concert], composer_id=2, work_id=10)
+        invalid_composer = invalid["programme_groups"][0]["composers"][0]
+        invalid_composer["name"] = "Joseph Haydn"
+        valid = complete_group_result([concert], composer_id=1, work_id=10)
+        turns = []
+        for payload in (invalid, valid):
+            turn = MagicMock()
+            turn.run = AsyncMock(
+                return_value=MagicMock(error=None, final_response=json.dumps(payload))
+            )
+            turns.append(turn)
+        thread = MagicMock()
+        thread.turn = AsyncMock(side_effect=turns)
+        codex = MagicMock()
+        codex.thread_start = AsyncMock(return_value=thread)
+
+        invalid_conn = MagicMock()
+        invalid_cursor = invalid_conn.cursor.return_value.__enter__.return_value
+        invalid_cursor.fetchone.side_effect = [(1,), (1,), (1,)]
+        valid_conn = MagicMock()
+        valid_cursor = valid_conn.cursor.return_value.__enter__.return_value
+        valid_cursor.fetchone.side_effect = [(1,), (1,), (1,)]
+
+        with patch.object(
+            analyzer,
+            "get_connection",
+            side_effect=[invalid_conn, valid_conn],
+        ):
+            result = asyncio.run(analyzer.run_agent(codex, group, "gpt-test", 30))
+
+        self.assertEqual(result, valid)
+        self.assertEqual(thread.turn.await_count, 2)
+        repair_prompt = thread.turn.await_args_list[1].args[0]
+        self.assertIn("Concert 1", repair_prompt)
+        self.assertIn(
+            "Existing work does not belong to the selected existing composer",
+            repair_prompt,
+        )
+        for connection in (invalid_conn, valid_conn):
+            connection.set_session.assert_called_once_with(readonly=True)
+            connection.close.assert_called_once()
+
+    def test_unknown_composer_and_work_ids_get_catalogue_corrections(self):
+        concert = analyzer.Concert(
+            1, "Symphony", date.today(), "https://example.test/1", None,
+            source="Example", source_url="https://example.test/series",
+        )
+        group = analyzer.group_concerts([concert])[0]
+        invalid_composer = complete_group_result([concert], composer_id=999, work_id=10)
+        invalid_work = complete_group_result([concert], work_id=999)
+        valid = complete_group_result([concert], work_id=10)
+        turns = []
+        for payload in (invalid_composer, invalid_work, valid):
+            turn = MagicMock()
+            turn.run = AsyncMock(
+                return_value=MagicMock(error=None, final_response=json.dumps(payload))
+            )
+            turns.append(turn)
+        thread = MagicMock()
+        thread.turn = AsyncMock(side_effect=turns)
+        codex = MagicMock()
+        codex.thread_start = AsyncMock(return_value=thread)
+
+        invalid_composer_conn = MagicMock()
+        invalid_composer_cursor = (
+            invalid_composer_conn.cursor.return_value.__enter__.return_value
+        )
+        invalid_composer_cursor.fetchone.return_value = None
+        invalid_work_conn = MagicMock()
+        invalid_work_cursor = invalid_work_conn.cursor.return_value.__enter__.return_value
+        invalid_work_cursor.fetchone.side_effect = [(1,), (1,), None]
+        valid_conn = MagicMock()
+        valid_cursor = valid_conn.cursor.return_value.__enter__.return_value
+        valid_cursor.fetchone.side_effect = [(1,), (1,), (1,)]
+
+        with patch.object(
+            analyzer,
+            "get_connection",
+            side_effect=[invalid_composer_conn, invalid_work_conn, valid_conn],
+        ):
+            result = asyncio.run(analyzer.run_agent(codex, group, "gpt-test", 30))
+
+        self.assertEqual(result, valid)
+        self.assertIn("Unknown composer ID 999", thread.turn.await_args_list[1].args[0])
+        self.assertIn("Unknown work ID 999", thread.turn.await_args_list[2].args[0])
+
+    def test_catalogue_repair_exhaustion_fails_closed(self):
+        concert = analyzer.Concert(
+            1, "Symphony", date.today(), "https://example.test/1", None,
+            source="Example", source_url="https://example.test/series",
+        )
+        group = analyzer.group_concerts([concert])[0]
+        invalid = complete_group_result([concert], composer_id=2, work_id=10)
+        turns = []
+        for _ in range(analyzer.MAX_REPAIR_TURNS + 1):
+            turn = MagicMock()
+            turn.run = AsyncMock(
+                return_value=MagicMock(error=None, final_response=json.dumps(invalid))
+            )
+            turns.append(turn)
+        thread = MagicMock()
+        thread.turn = AsyncMock(side_effect=turns)
+        codex = MagicMock()
+        codex.thread_start = AsyncMock(return_value=thread)
+        connections = []
+        for _ in turns:
+            connection = MagicMock()
+            cursor = connection.cursor.return_value.__enter__.return_value
+            cursor.fetchone.side_effect = [(1,), (1,), (1,)]
+            connections.append(connection)
+
+        with (
+            patch.object(analyzer, "get_connection", side_effect=connections),
+            self.assertRaisesRegex(ValueError, "Concert 1: Existing work"),
+        ):
+            asyncio.run(analyzer.run_agent(codex, group, "gpt-test", 30))
+
+        self.assertEqual(thread.turn.await_count, analyzer.MAX_REPAIR_TURNS + 1)
+        for connection in connections:
+            connection.close.assert_called_once()
+            cursor = connection.cursor.return_value.__enter__.return_value
+            queries = [
+                call.args[0].strip()
+                for call in cursor.execute.call_args_list
+            ]
+            self.assertTrue(all(query.startswith("SELECT") for query in queries))
+
+    def test_database_operational_error_does_not_start_semantic_repair(self):
+        concert = analyzer.Concert(
+            1, "Symphony", date.today(), "https://example.test/1", None,
+            source="Example", source_url="https://example.test/series",
+        )
+        group = analyzer.group_concerts([concert])[0]
+        turn = MagicMock()
+        turn.run = AsyncMock(
+            return_value=MagicMock(
+                error=None,
+                final_response=json.dumps(complete_group_result([concert])),
+            )
+        )
+        thread = MagicMock()
+        thread.turn = AsyncMock(return_value=turn)
+        codex = MagicMock()
+        codex.thread_start = AsyncMock(return_value=thread)
+
+        with (
+            patch.object(
+                analyzer,
+                "get_connection",
+                side_effect=analyzer.psycopg2.OperationalError("database unavailable"),
+            ),
+            self.assertRaises(analyzer.psycopg2.OperationalError),
+        ):
+            asyncio.run(analyzer.run_agent(codex, group, "gpt-test", 30))
+
+        self.assertEqual(thread.turn.await_count, 1)
+
+    def test_model_capacity_error_does_not_start_semantic_repair(self):
+        concert = analyzer.Concert(
+            1, "Symphony", date.today(), "https://example.test/1", None,
+            source="Example", source_url="https://example.test/series",
+        )
+        group = analyzer.group_concerts([concert])[0]
+        turn = MagicMock()
+        turn.run = AsyncMock(
+            return_value=MagicMock(
+                error="Selected model is at capacity. Please try a different model.",
+                final_response=None,
+            )
+        )
+        thread = MagicMock()
+        thread.turn = AsyncMock(return_value=turn)
+        codex = MagicMock()
+        codex.thread_start = AsyncMock(return_value=thread)
+
+        with self.assertRaisesRegex(RuntimeError, "at capacity"):
+            asyncio.run(analyzer.run_agent(codex, group, "gpt-test", 30))
+
+        self.assertEqual(thread.turn.await_count, 1)
 
     def test_failed_timeout_interrupt_marks_codex_client_unhealthy(self):
         codex = MagicMock()
