@@ -13,7 +13,8 @@ uv run python -m crawlers.sk.filharmonia_sk.main
 
 # Run a single analyzer
 uv run python -m analyzers.analyze_potential_events              # dry run
-uv run python -m analyzers.analyze_potential_events --commit     # classify one source
+uv run python -m analyzers.analyze_potential_events --commit     # classify one source in shadow mode
+uv run python -m analyzers.analyze_potential_events --commit --promote  # classify and promote
 ```
 
 Package management uses `uv` (not pip) for local development. Exception:
@@ -31,8 +32,8 @@ testing.
 ### Pipeline flow
 
 1. **Crawlers** (`crawlers/<country_code>/<site>/main.py`) — Each crawler has a `main()` function that scrapes a specific website, saves results to `data/<site>.csv`, and uploads to the DB via `upload_concerts()`.
-2. **Analyzer: classify events** (`analyzers/analyze_potential_events.py`) — Uses one persistent Codex thread per source to classify its unreviewed events in bounded pages, then copies confirmed ones to `classical_concert`. Automatic runs only consider current/future events; `--include-past` is an explicit backlog operation.
-3. **Analyzer: extract concert programmes** (`analyzers/analyze_concert_programs.py`) — Uses the Codex SDK to inspect concert sources, resolve composers and works, and populate the concert programme tables.
+2. **Analyzer: classify events** (`analyzers/analyze_potential_events.py`) — Uses one persistent Codex thread per source to classify its unreviewed events in bounded pages. Committed runs store shadow decisions; promotion requires the explicit `--promote` flag. Automatic runs only consider current/future events; `--include-past` and `--reanalyze` are explicit backlog operations.
+3. **Analyzer: extract concert programmes** (`analyzers/analyze_concert_programs.py`) — Uses the Codex SDK to inspect concert sources, independently assess event inclusion, resolve composers and works, and populate the concert programme tables. Explicit nonclassical/non-event results quarantine rather than delete rows.
 
 ### Two upload paths
 
@@ -49,6 +50,7 @@ testing.
 
 - `classical_concert` — Confirmed classical music events
 - `potential_event` — Unclassified events awaiting AI analysis
+- `event_inclusion_assessment` — Append-only classifier/programme inclusion evidence
 - `composer` — Composer registry
 - `classical_concert_composer` — Many-to-many join table
 

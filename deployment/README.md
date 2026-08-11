@@ -72,6 +72,12 @@ started explicitly with the analyzer CLI.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `POTENTIAL_EVENT_CLASSIFIER_ENABLED` | `false` | Enable the continuous source classifier |
+| `POTENTIAL_EVENT_CLASSIFIER_PROMOTION_ENABLED` | `false` | Promote validated classical decisions; false never inserts new concerts, but explicit negative decisions can quarantine exact existing matches |
 | `POTENTIAL_EVENT_CLASSIFIER_IDLE_SECONDS` | `300` | Wait after draining the eligible queue |
 | `POTENTIAL_EVENT_CLASSIFIER_FAILURE_BACKOFF_SECONDS` | `900` | Wait after a fatal source run |
 | `POTENTIAL_EVENT_CLASSIFIER_TURN_TIMEOUT_SECONDS` | `1800` | Codex deadline per bounded source page; process guards are derived from it |
+
+The programme analyzer records an independent occurrence-level inclusion
+assessment. Explicit `nonclassical` and `not_event` results quarantine the row,
+disable further programme attempts, and remove catalogue links. Quarantine is
+currently a backend review state; public API filtering is intentionally deferred.

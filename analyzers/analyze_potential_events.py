@@ -18,6 +18,15 @@ from dotenv import load_dotenv
 from openai_codex import ApprovalMode, AsyncCodex, CodexConfig, Sandbox
 
 from analyzers.analyze_concert_programs import validate_model
+from analyzers.event_inclusion import (
+    ALL_CATEGORIES,
+    CLASSICAL_CATEGORY_ORDER,
+    INCLUSION_DECISIONS,
+    NONCLASSICAL_CATEGORY_ORDER,
+    NOT_EVENT_CATEGORY_ORDER,
+    UNCERTAIN_CATEGORY,
+    validate_decision_category,
+)
 from automation.codex_auth import CodexAuthRequiredError, raise_for_codex_auth
 from crawlers.classical import CONCERT_INSERT_ADVISORY_LOCK
 from observability import configure_logging
@@ -27,43 +36,17 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gpt-5.6-luna"
-DEFAULT_MAX_EVENTS_PER_TURN = 100
+DEFAULT_MAX_EVENTS_PER_TURN = 50
 DEFAULT_MAX_INPUT_CHARS = 120_000
 DEFAULT_TURN_TIMEOUT_SECONDS = 1800
 INTERRUPT_TIMEOUT_SECONDS = 15
 MAX_ATTEMPTS = 3
 UNCERTAIN_RETRY_INTERVAL_DAYS = 7
 TECHNICAL_RETRY_INTERVAL_HOURS = 1
+MAX_REPAIR_TURNS = 2
 ADVISORY_LOCK_NAME = "classical-bot-potential-event-classification"
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "analyze_potential_events.mustache"
 
-CLASSICAL_CATEGORY_ORDER = (
-    "orchestral",
-    "chamber_or_recital",
-    "opera_or_operetta",
-    "ballet_or_classical_dance",
-    "choral_or_sacred",
-    "contemporary_art_music",
-    "soundtrack_game_or_crossover",
-    "musical_with_classical_substance",
-    "education_rehearsal_or_competition",
-)
-NONCLASSICAL_CATEGORY_ORDER = (
-    "nonclassical_music",
-    "commercial_musical_theatre",
-    "theatre_dance_or_spoken_word",
-    "nonperformance",
-    "recording_only",
-    "other",
-)
-UNCERTAIN_CATEGORY = "unclear"
-CLASSICAL_CATEGORIES = frozenset(CLASSICAL_CATEGORY_ORDER)
-NONCLASSICAL_CATEGORIES = frozenset(NONCLASSICAL_CATEGORY_ORDER)
-ALL_CATEGORIES = [
-    *CLASSICAL_CATEGORY_ORDER,
-    *NONCLASSICAL_CATEGORY_ORDER,
-    UNCERTAIN_CATEGORY,
-]
 FINDING_CODES = (
     "malformed_date",
     "duplicate_ingestion",
@@ -89,7 +72,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                     "event_ids": {"type": "array", "items": {"type": "integer"}},
                     "decision": {
                         "type": "string",
-                        "enum": ["classical", "nonclassical", "uncertain"],
+                        "enum": list(INCLUSION_DECISIONS),
                     },
                     "category": {"type": "string", "enum": ALL_CATEGORIES},
                     "rationale": {"type": "string"},
@@ -227,8 +210,10 @@ def recover_stale_runs(conn) -> int:
     return count
 
 
-def eligibility_sql(*, include_past: bool, force: bool) -> str:
+def eligibility_sql(*, include_past: bool, force: bool, reanalyze: bool = False) -> str:
     date_clause = "TRUE" if include_past else "p.date >= CURRENT_DATE"
+    if reanalyze:
+        return date_clause
     if force:
         analysis_clause = "(a.potential_event_id IS NULL OR a.status IN ('uncertain', 'error', 'failed'))"
     else:
@@ -249,8 +234,13 @@ def choose_source(
     source_url: str | None,
     include_past: bool,
     force: bool,
+    reanalyze: bool = False,
 ) -> tuple[str | None, str | None] | None:
-    eligibility = eligibility_sql(include_past=include_past, force=force)
+    eligibility = eligibility_sql(
+        include_past=include_past,
+        force=force,
+        reanalyze=reanalyze,
+    )
     with conn.cursor() as cursor:
         if source is not None:
             params: list[Any] = [source]
@@ -296,8 +286,13 @@ def select_source_events(
     *,
     include_past: bool,
     force: bool,
+    reanalyze: bool = False,
 ) -> list[PotentialEvent]:
-    eligibility = eligibility_sql(include_past=include_past, force=force)
+    eligibility = eligibility_sql(
+        include_past=include_past,
+        force=force,
+        reanalyze=reanalyze,
+    )
     with conn.cursor() as cursor:
         cursor.execute(
             f"""
@@ -389,6 +384,7 @@ def render_prompt(
             "candidate_json": json.dumps(values, ensure_ascii=False, indent=2),
             "classical_categories": list(CLASSICAL_CATEGORY_ORDER),
             "nonclassical_categories": list(NONCLASSICAL_CATEGORY_ORDER),
+            "not_event_categories": list(NOT_EVENT_CATEGORY_ORDER),
             "uncertain_category": UNCERTAIN_CATEGORY,
         },
     )
@@ -403,16 +399,13 @@ def validate_result(page: list[CandidateGroup], result: dict[str, Any]) -> dict[
             raise ValueError("classification event_ids must not be empty")
         decision = classification["decision"]
         category = classification["category"]
-        if decision == "classical" and category not in CLASSICAL_CATEGORIES:
-            raise ValueError(f"classical decision has incompatible category {category!r}")
-        if decision == "nonclassical" and category not in NONCLASSICAL_CATEGORIES:
-            raise ValueError(f"nonclassical decision has incompatible category {category!r}")
-        if decision == "uncertain" and category != UNCERTAIN_CATEGORY:
-            raise ValueError(
-                f"uncertain decisions must use category {UNCERTAIN_CATEGORY!r}"
-            )
+        validate_decision_category(decision, category)
         if not classification["rationale"].strip():
             raise ValueError("classification rationale must not be empty")
+        if not classification["evidence_urls"] or not all(
+            value.strip() for value in classification["evidence_urls"]
+        ):
+            raise ValueError("classification must include at least one evidence URL")
         for event_id in ids:
             if event_id not in expected:
                 raise ValueError(f"unknown potential event ID {event_id}")
@@ -422,13 +415,42 @@ def validate_result(page: list[CandidateGroup], result: dict[str, Any]) -> dict[
     missing = expected - seen
     if missing:
         raise ValueError(f"missing classifications for potential event IDs {sorted(missing)}")
+    decision_by_event = {
+        event_id: classification["decision"]
+        for classification in result["classifications"]
+        for event_id in classification["event_ids"]
+    }
     for finding in result["source_findings"]:
         unknown = set(finding["event_ids"]) - expected
         if unknown:
             raise ValueError(f"source finding references unknown IDs {sorted(unknown)}")
         if not finding["summary"].strip():
             raise ValueError("source finding summary must not be empty")
+        decisions = {decision_by_event[event_id] for event_id in finding["event_ids"]}
+        if finding["code"] == "non_event_ingestion" and decisions != {"not_event"}:
+            raise ValueError(
+                "non_event_ingestion findings require not_event decisions for every affected ID"
+            )
+        if (
+            finding["severity"] == "error"
+            and finding["code"] in {"malformed_date", "wrong_event_url", "polluted_field"}
+            and not decisions.issubset({"not_event", "uncertain"})
+        ):
+            raise ValueError(
+                f"error-severity {finding['code']} findings require not_event or uncertain decisions"
+            )
     return result
+
+
+def repair_prompt(error: Exception, page: list[CandidateGroup]) -> str:
+    expected = [event_id for group in page for event_id in group.event_ids]
+    return (
+        "Your previous response failed deterministic validation. Return a complete corrected "
+        "response for the same page, not a patch. Do not mention the correction outside the "
+        "structured response.\n\n"
+        f"Validation error: {error}\n"
+        f"Every expected event ID must appear exactly once: {expected}"
+    )
 
 
 async def run_turn(thread, prompt: str, model: str, timeout_seconds: int) -> dict[str, Any]:
@@ -454,6 +476,49 @@ async def run_turn(thread, prompt: str, model: str, timeout_seconds: int) -> dic
     if not response.final_response:
         raise RuntimeError("Codex returned no final response")
     return json.loads(response.final_response)
+
+
+async def run_validated_turn(
+    thread,
+    prompt: str,
+    page: list[CandidateGroup],
+    model: str,
+    timeout_seconds: int,
+    *,
+    source: str | None,
+    page_number: int,
+) -> tuple[dict[str, Any], int]:
+    repairs = 0
+    current_prompt = prompt
+    while True:
+        result = await run_turn(thread, current_prompt, model, timeout_seconds)
+        try:
+            return validate_result(page, result), repairs
+        except ValueError as error:
+            if repairs >= MAX_REPAIR_TURNS:
+                logger.error(
+                    "Potential-event response repair exhausted",
+                    extra={
+                        "event": "potential_event_classification_repair_exhausted",
+                        "source": source,
+                        "page_number": page_number,
+                        "repair_count": repairs,
+                        "error_message": str(error),
+                    },
+                )
+                raise
+            repairs += 1
+            logger.warning(
+                "Repairing invalid potential-event response",
+                extra={
+                    "event": "potential_event_classification_repair_started",
+                    "source": source,
+                    "page_number": page_number,
+                    "repair_number": repairs,
+                    "error_message": str(error),
+                },
+            )
+            current_prompt = repair_prompt(error, page)
 
 
 def create_run(
@@ -489,7 +554,46 @@ def set_run_thread(conn, run_id: int, thread_id: str) -> None:
     conn.commit()
 
 
-def promote_classical_event(cursor, event_id: int) -> None:
+def matching_concert(cursor, event_id: int) -> tuple[int, str] | None:
+    cursor.execute(
+        """
+        SELECT c.id, c.inclusion_status
+        FROM potential_event p
+        JOIN classical_concert c
+          ON c.title = p.title AND c.date = p.date AND c.url = p.url
+        WHERE p.id = %s
+        ORDER BY c.id
+        LIMIT 1
+        """,
+        (event_id,),
+    )
+    return cursor.fetchone()
+
+
+def promote_classical_event(cursor, event_id: int) -> tuple[str, int | None]:
+    existing = matching_concert(cursor, event_id)
+    if existing and existing[1] != "included":
+        cursor.execute(
+            """
+            UPDATE potential_event
+            SET analyzed = true, is_classical_concert = true,
+                added = false, updated_at = now()
+            WHERE id = %s
+            """,
+            (event_id,),
+        )
+        return "blocked", existing[0]
+    if existing:
+        cursor.execute(
+            """
+            UPDATE potential_event
+            SET analyzed = true, is_classical_concert = true,
+                added = true, updated_at = now()
+            WHERE id = %s
+            """,
+            (event_id,),
+        )
+        return "promoted", existing[0]
     cursor.execute(
         """
         INSERT INTO classical_concert
@@ -505,9 +609,11 @@ def promote_classical_event(cursor, event_id: int) -> None:
               SELECT 1 FROM classical_concert c
               WHERE c.title = p.title AND c.date = p.date AND c.url = p.url
           )
+        RETURNING id
         """,
         (event_id,),
     )
+    concert_id = cursor.fetchone()[0]
     cursor.execute(
         """
         UPDATE potential_event
@@ -516,15 +622,41 @@ def promote_classical_event(cursor, event_id: int) -> None:
         """,
         (event_id,),
     )
+    return "promoted", concert_id
 
 
-def promote_legacy_classical_events(conn) -> int:
+def promote_pending_classical_events(conn) -> tuple[int, int]:
     with conn.cursor() as cursor:
         cursor.execute(
             """
-            SELECT id FROM potential_event
-            WHERE analyzed = true AND is_classical_concert = true AND added = false
-            ORDER BY id
+            SELECT p.id
+            FROM potential_event p
+            JOIN potential_event_classification a ON a.potential_event_id = p.id
+            WHERE p.analyzed = true
+              AND p.is_classical_concert = true
+              AND p.added = false
+              AND a.status = 'classified'
+              AND a.is_classical = true
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM classical_concert c
+                  WHERE c.title = p.title AND c.date = p.date AND c.url = p.url
+                    AND c.inclusion_status <> 'included'
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM event_inclusion_assessment e
+                  WHERE e.potential_event_id = p.id
+                    AND e.origin = 'potential_classifier'
+                    AND e.decision = 'classical'
+                    AND e.id = (
+                        SELECT MAX(e2.id)
+                        FROM event_inclusion_assessment e2
+                        WHERE e2.potential_event_id = p.id
+                          AND e2.origin = 'potential_classifier'
+                    )
+              )
+            ORDER BY p.id
             """
         )
         ids = [row[0] for row in cursor.fetchall()]
@@ -533,10 +665,72 @@ def promote_legacy_classical_events(conn) -> int:
                 "SELECT pg_advisory_xact_lock(hashtext(%s))",
                 (CONCERT_INSERT_ADVISORY_LOCK,),
             )
+        promoted = 0
+        blocked = 0
         for event_id in ids:
-            promote_classical_event(cursor, event_id)
+            outcome, _ = promote_classical_event(cursor, event_id)
+            promoted += outcome == "promoted"
+            blocked += outcome == "blocked"
     conn.commit()
-    return len(ids)
+    return promoted, blocked
+
+
+def insert_assessment(
+    cursor,
+    *,
+    event_id: int,
+    concert_id: int | None,
+    run_id: int,
+    classification: dict[str, Any],
+    model: str,
+) -> None:
+    evidence_urls = classification["evidence_urls"]
+    cursor.execute(
+        """
+        INSERT INTO event_inclusion_assessment
+            (potential_event_id, classical_concert_id, classification_run_id,
+             origin, decision, category, rationale, evidence_urls,
+             source_url, model)
+        VALUES (%s, %s, %s, 'potential_classifier', %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            event_id,
+            concert_id,
+            run_id,
+            classification["decision"],
+            classification["category"],
+            classification["rationale"].strip(),
+            Json(evidence_urls),
+            evidence_urls[0] if evidence_urls else None,
+            model,
+        ),
+    )
+
+
+def quarantine_matching_concert(cursor, event_id: int) -> int | None:
+    existing = matching_concert(cursor, event_id)
+    if not existing:
+        return None
+    concert_id = existing[0]
+    cursor.execute(
+        """
+        UPDATE classical_concert
+        SET inclusion_status = 'quarantined',
+            program_analysis_eligible = false,
+            updated_at = now()
+        WHERE id = %s AND inclusion_status = 'included'
+        """,
+        (concert_id,),
+    )
+    cursor.execute(
+        "DELETE FROM classical_concert_work WHERE classical_concert_id = %s",
+        (concert_id,),
+    )
+    cursor.execute(
+        "DELETE FROM classical_concert_composer WHERE classical_concert_id = %s",
+        (concert_id,),
+    )
+    return concert_id
 
 
 def persist_page_result(
@@ -545,12 +739,17 @@ def persist_page_result(
     run_id: int,
     result: dict[str, Any],
     model: str,
+    promote: bool = False,
+    repairs: int = 0,
 ) -> tuple[int, int]:
     classified = 0
     uncertain = 0
+    promoted = 0
+    blocked = 0
+    shadow_classical = 0
     try:
         with conn.cursor() as cursor:
-            if any(
+            if promote and any(
                 classification["decision"] == "classical"
                 for classification in result["classifications"]
             ):
@@ -562,13 +761,33 @@ def persist_page_result(
                 decision = classification["decision"]
                 for event_id in classification["event_ids"]:
                     if decision == "classical":
-                        promote_classical_event(cursor, event_id)
+                        if promote:
+                            promotion, concert_id = promote_classical_event(cursor, event_id)
+                            promoted += promotion == "promoted"
+                            blocked += promotion == "blocked"
+                        else:
+                            existing = matching_concert(cursor, event_id)
+                            cursor.execute(
+                                """
+                                UPDATE potential_event
+                                SET analyzed = true, is_classical_concert = true,
+                                    added = %s, updated_at = now()
+                                WHERE id = %s
+                                """,
+                                (
+                                    bool(existing and existing[1] == "included"),
+                                    event_id,
+                                ),
+                            )
+                            concert_id = existing[0] if existing else None
+                            shadow_classical += 1
                         is_classical = True
                         status = "classified"
                         next_attempt = None
                         completed = True
                         classified += 1
-                    elif decision == "nonclassical":
+                    elif decision in {"nonclassical", "not_event"}:
+                        concert_id = quarantine_matching_concert(cursor, event_id)
                         cursor.execute(
                             """
                             UPDATE potential_event
@@ -584,11 +803,29 @@ def persist_page_result(
                         completed = True
                         classified += 1
                     else:
+                        existing = matching_concert(cursor, event_id)
+                        concert_id = existing[0] if existing else None
+                        cursor.execute(
+                            """
+                            UPDATE potential_event
+                            SET analyzed = false, updated_at = now()
+                            WHERE id = %s
+                            """,
+                            (event_id,),
+                        )
                         is_classical = None
                         status = "uncertain"
                         next_attempt = f"{UNCERTAIN_RETRY_INTERVAL_DAYS} days"
                         completed = False
                         uncertain += 1
+                    insert_assessment(
+                        cursor,
+                        event_id=event_id,
+                        concert_id=concert_id,
+                        run_id=run_id,
+                        classification=classification,
+                        model=model,
+                    )
                     cursor.execute(
                         """
                         INSERT INTO potential_event_classification
@@ -641,10 +878,23 @@ def persist_page_result(
                 UPDATE potential_event_classification_run
                 SET classified_count = classified_count + %s,
                     uncertain_count = uncertain_count + %s,
+                    repaired_count = repaired_count + %s,
+                    promoted_count = promoted_count + %s,
+                    blocked_promotion_count = blocked_promotion_count + %s,
+                    shadow_classical_count = shadow_classical_count + %s,
                     findings = findings || %s::jsonb
                 WHERE id = %s
                 """,
-                (classified, uncertain, Json(result["source_findings"]), run_id),
+                (
+                    classified,
+                    uncertain,
+                    repairs,
+                    promoted,
+                    blocked,
+                    shadow_classical,
+                    Json(result["source_findings"]),
+                    run_id,
+                ),
             )
         conn.commit()
     except Exception:
@@ -787,6 +1037,7 @@ async def analyze_source(
     maximum_chars: int,
     timeout_seconds: int,
     heartbeat_path: Path | None,
+    promote: bool = False,
 ) -> int:
     pages = pack_pages(
         candidate_groups(events),
@@ -816,7 +1067,7 @@ async def analyze_source(
             heartbeat()
             event_ids = [event_id for group in page for event_id in group.event_ids]
             try:
-                result = await run_turn(
+                result, repairs = await run_validated_turn(
                     thread,
                     render_prompt(
                         source=source,
@@ -825,12 +1076,31 @@ async def analyze_source(
                         page_number=index,
                         page_count=len(pages),
                     ),
+                    page,
                     model,
                     timeout_seconds,
+                    source=source,
+                    page_number=index,
                 )
-                validate_result(page, result)
                 if commit and run_id is not None:
-                    persist_page_result(conn, run_id=run_id, result=result, model=model)
+                    persist_page_result(
+                        conn,
+                        run_id=run_id,
+                        result=result,
+                        model=model,
+                        promote=promote,
+                        repairs=repairs,
+                    )
+                if repairs:
+                    logger.info(
+                        "Potential-event response repaired",
+                        extra={
+                            "event": "potential_event_classification_repaired",
+                            "source": source,
+                            "page_number": index,
+                            "repair_count": repairs,
+                        },
+                    )
             except (asyncio.CancelledError, CodexAuthRequiredError):
                 raise
             except Exception as error:
@@ -864,7 +1134,9 @@ def run(
     source_url: str | None = None,
     include_past: bool = False,
     force: bool = False,
+    reanalyze: bool = False,
     commit: bool = False,
+    promote: bool = False,
     model: str = DEFAULT_MODEL,
     maximum_events: int = DEFAULT_MAX_EVENTS_PER_TURN,
     maximum_chars: int = DEFAULT_MAX_INPUT_CHARS,
@@ -872,6 +1144,10 @@ def run(
     heartbeat_path: Path | None = None,
     result_path: Path | None = None,
 ) -> int:
+    if promote and not commit:
+        raise ValueError("promotion requires committed classification")
+    if reanalyze and source is None:
+        raise ValueError("source reanalysis requires an explicit source")
     started_at = monotonic()
     conn = get_connection()
     locked = False
@@ -884,11 +1160,15 @@ def run(
             if not locked:
                 raise RuntimeError("Another committed potential-event classification is running")
             recover_stale_runs(conn)
-            repaired = promote_legacy_classical_events(conn)
-            if repaired:
+            if promote:
+                promoted, blocked = promote_pending_classical_events(conn)
                 logger.info(
-                    "Promoted legacy classified potential events",
-                    extra={"event": "potential_event_legacy_promotion_completed", "count": repaired},
+                    "Processed pending validated potential-event promotions",
+                    extra={
+                        "event": "potential_event_pending_promotion_completed",
+                        "promoted_count": promoted,
+                        "blocked_count": blocked,
+                    },
                 )
         selected = choose_source(
             conn,
@@ -896,6 +1176,7 @@ def run(
             source_url=source_url,
             include_past=include_past,
             force=force,
+            reanalyze=reanalyze,
         )
         if selected is None:
             write_result(result_path, status="empty", selected_count=0, source=source)
@@ -907,6 +1188,7 @@ def run(
             selected_source_url,
             include_past=include_past,
             force=force,
+            reanalyze=reanalyze,
         )
         if commit:
             run_id = create_run(
@@ -925,6 +1207,8 @@ def run(
                 "source_url": selected_source_url,
                 "selected_count": len(events),
                 "commit": commit,
+                "promote": promote,
+                "reanalyze": reanalyze,
             },
         )
         failures = asyncio.run(
@@ -940,6 +1224,7 @@ def run(
                 maximum_chars=maximum_chars,
                 timeout_seconds=timeout_seconds,
                 heartbeat_path=heartbeat_path,
+                promote=promote,
             )
         )
         if commit and run_id is not None:
@@ -994,7 +1279,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-url")
     parser.add_argument("--include-past", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--reanalyze",
+        action="store_true",
+        help="Reassess all selected source rows, including completed classifications.",
+    )
     parser.add_argument("--commit", action="store_true")
+    parser.add_argument(
+        "--promote",
+        action="store_true",
+        help="Promote validated classical decisions; requires --commit.",
+    )
     parser.add_argument("--model", default=os.getenv("POTENTIAL_EVENT_CODEX_MODEL", DEFAULT_MODEL))
     parser.add_argument("--max-events-per-turn", type=int, default=DEFAULT_MAX_EVENTS_PER_TURN)
     parser.add_argument("--max-input-chars", type=int, default=DEFAULT_MAX_INPUT_CHARS)
@@ -1004,6 +1299,10 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.source_url and args.source is None:
         parser.error("--source-url requires --source")
+    if args.reanalyze and args.source is None:
+        parser.error("--reanalyze requires --source")
+    if args.promote and not args.commit:
+        parser.error("--promote requires --commit")
     return args
 
 
@@ -1015,7 +1314,9 @@ def main() -> None:
         source_url=args.source_url,
         include_past=args.include_past,
         force=args.force,
+        reanalyze=args.reanalyze,
         commit=args.commit,
+        promote=args.promote,
         model=args.model,
         maximum_events=args.max_events_per_turn,
         maximum_chars=args.max_input_chars,
