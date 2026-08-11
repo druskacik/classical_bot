@@ -184,6 +184,10 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         self.assertIn("contemporary dance or ballet", normalized_prompt)
         self.assertIn("Seasonal concerts by", normalized_prompt)
         self.assertIn("Vague marketing", normalized_prompt)
+        self.assertIn("explicitly bills an orchestra, string trio", normalized_prompt)
+        self.assertIn("organ-and-voice concert", normalized_prompt)
+        self.assertIn("a vocalist, drums, bass, or another rhythm section", normalized_prompt)
+        self.assertIn("Kurt Weill song programme", normalized_prompt)
 
     def test_groups_by_source_normalized_title_and_source_url_without_size_cap(self):
         concerts = [
