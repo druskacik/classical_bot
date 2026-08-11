@@ -94,11 +94,21 @@ Potential-event classification is disabled by default until its migration and
 credentials are deployed. Set `POTENTIAL_EVENT_CLASSIFIER_ENABLED=true` to run
 it continuously. Each child run takes one source, snapshots its eligible
 unclassified current/future events, and reuses one Codex thread across bounded
-pages. Classical results are promoted, nonclassical results are retained as
-decisions, and genuinely ambiguous events remain `uncertain` for a later retry.
+pages. Classical results become promotion candidates, nonclassical results are
+retained as decisions, and genuinely ambiguous events remain `uncertain` for a
+later retry.
+Committed classification runs do not publish new concerts by default. They do
+record every assessment, and an explicit `nonclassical` or `not_event` decision
+quarantines an exact matching existing concert; quarantine is currently a
+backend review state and does not hide the row from the public API. Set
+`POTENTIAL_EVENT_CLASSIFIER_PROMOTION_ENABLED=true` only after reviewing the
+stored inclusion assessments; the worker then passes the explicit `--promote`
+flag and promotes the validated backlog without another model run.
 Use `uv run python -m analyzers.analyze_potential_events --include-past` for a
 read-only historical preview, adding `--commit` only for an intentional backlog
-run. Musical theatre is judged by musical substance rather than its label:
+run and `--promote` only when publication is intentional. Use `--source NAME
+--reanalyze --commit` to reassess a completed source. Musical theatre is judged
+by musical substance rather than its label:
 classically substantial works and concert/orchestral presentations such as
 Bernstein's *West Side Story* are eligible; routine commercial productions
 without a meaningful classical connection are not.
@@ -122,6 +132,7 @@ HTTPS_PROXY=
 PYTHONUNBUFFERED=1
 RUN_JOBS_ON_STARTUP=false
 POTENTIAL_EVENT_CLASSIFIER_ENABLED=false
+POTENTIAL_EVENT_CLASSIFIER_PROMOTION_ENABLED=false
 ```
 
 # Run crawlers

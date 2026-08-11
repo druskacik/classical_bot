@@ -25,6 +25,14 @@ from automation.codex_auth import (
     CodexAuthRequiredError,
     raise_for_codex_auth,
 )
+from analyzers.event_inclusion import (
+    CLASSICAL_CATEGORY_ORDER,
+    NONCLASSICAL_CATEGORY_ORDER,
+    NOT_EVENT_CATEGORY_ORDER,
+    UNCERTAIN_CATEGORY,
+    assessment_schema,
+    validate_decision_category,
+)
 from crawlers.cities import normalize_city_key
 from observability import configure_logging
 
@@ -43,6 +51,7 @@ POSTGRES_KEEPALIVES_COUNT = 3
 MAX_AUTOMATIC_ATTEMPTS = 3
 NO_PROGRAM_RETRY_INTERVAL_DAYS = 7
 TECHNICAL_RETRY_INTERVAL_HOURS = 1
+MAX_REPAIR_TURNS = 2
 ADVISORY_LOCK_NAME = "classical-sk-concert-program-analysis"
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "analyze_concert_program.mustache"
 EVENT_UPDATE_FIELDS = (
@@ -70,6 +79,7 @@ PROGRAMME_RESULT_PROPERTIES: dict[str, Any] = {
             "ambiguous",
             "no_program",
             "page_unavailable",
+            "not_applicable",
         ],
     },
     "notes": {"type": "string"},
@@ -199,12 +209,14 @@ OUTPUT_SCHEMA: dict[str, Any] = {
                     "source_url": {"type": "string"},
                     "event_updates": EVENT_UPDATES_SCHEMA,
                     "location_resolution": LOCATION_RESOLUTION_SCHEMA,
+                    "event_assessment": assessment_schema(),
                 },
                 "required": [
                     "concert_id",
                     "source_url",
                     "event_updates",
                     "location_resolution",
+                    "event_assessment",
                 ],
             },
         },
@@ -313,6 +325,10 @@ def render_prompt(group: ConcertGroup) -> str:
             "concert_count": len(group.concerts),
             "descriptions": descriptions,
             "occurrences": occurrences,
+            "classical_categories": list(CLASSICAL_CATEGORY_ORDER),
+            "nonclassical_categories": list(NONCLASSICAL_CATEGORY_ORDER),
+            "not_event_categories": list(NOT_EVENT_CATEGORY_ORDER),
+            "uncertain_category": UNCERTAIN_CATEGORY,
         },
     )
 
@@ -337,7 +353,7 @@ def select_concerts(
                 LEFT JOIN city ON city.id = c.city_id
                 LEFT JOIN concert_program_analysis a ON a.classical_concert_id = c.id
                 WHERE c.id = ANY(%s)
-                  AND (%s OR a.status IS NULL OR a.status NOT IN ('complete', 'partial', 'composer_only', 'ambiguous', 'expired_no_program', 'failed'))
+                  AND (%s OR a.status IS NULL OR a.status NOT IN ('complete', 'partial', 'composer_only', 'ambiguous', 'expired_no_program', 'not_applicable', 'failed'))
                 ORDER BY c.id
                 LIMIT %s
                 """.format(columns=columns),
@@ -349,6 +365,7 @@ def select_concerts(
                     FROM classical_concert c
                     LEFT JOIN city ON city.id = c.city_id
                     WHERE c.city_id IS NULL AND c.city_raw IS NOT NULL
+                      AND c.inclusion_status = 'included'
                       AND c.date >= CURRENT_DATE
                     ORDER BY c.date, c.id LIMIT %s""",
                 (limit,),
@@ -361,6 +378,7 @@ def select_concerts(
                 LEFT JOIN city ON city.id = c.city_id
                 LEFT JOIN concert_program_analysis a ON a.classical_concert_id = c.id
                 WHERE c.program_analysis_eligible = true
+                  AND c.inclusion_status = 'included'
                   AND c.date >= CURRENT_DATE
                   AND (
                     a.id IS NULL
@@ -461,42 +479,89 @@ async def run_agent(
         model=model,
         sandbox=Sandbox.full_access,
     )
-    turn = await thread.turn(
-        render_prompt(group),
-        approval_mode=ApprovalMode.deny_all,
-        cwd=str(Path.cwd()),
-        model=model,
-        output_schema=OUTPUT_SCHEMA,
-        sandbox=Sandbox.full_access,
-    )
-    try:
-        result = await asyncio.wait_for(turn.run(), timeout=timeout_seconds)
-    except TimeoutError:
+    prompt = render_prompt(group)
+    repairs = 0
+    concert_ids = [concert.id for concert in group.concerts]
+    while True:
+        turn = await thread.turn(
+            prompt,
+            approval_mode=ApprovalMode.deny_all,
+            cwd=str(Path.cwd()),
+            model=model,
+            output_schema=OUTPUT_SCHEMA,
+            sandbox=Sandbox.full_access,
+        )
         try:
-            await asyncio.wait_for(
-                turn.interrupt(),
-                timeout=INTERRUPT_TIMEOUT_SECONDS,
+            response = await asyncio.wait_for(turn.run(), timeout=timeout_seconds)
+        except TimeoutError:
+            try:
+                await asyncio.wait_for(
+                    turn.interrupt(),
+                    timeout=INTERRUPT_TIMEOUT_SECONDS,
+                )
+            except Exception as interrupt_error:
+                logger.exception(
+                    "Could not interrupt timed-out Codex turn",
+                    extra={
+                        "event": "programme_analysis_interrupt_failed",
+                        "concert_ids": concert_ids,
+                    },
+                )
+                raise CodexClientUnhealthyError(
+                    "Timed-out Codex turn could not be interrupted safely"
+                ) from interrupt_error
+            raise TimeoutError(
+                f"Concert group programme analysis exceeded {timeout_seconds} seconds"
             )
-        except Exception as interrupt_error:
-            logger.exception(
-                "Could not interrupt timed-out Codex turn",
+        if response.error:
+            raise_for_codex_auth(str(response.error))
+            raise RuntimeError(str(response.error))
+        if not response.final_response:
+            raise RuntimeError("Codex returned no final response")
+        result = json.loads(response.final_response)
+        try:
+            expanded = expand_group_result(group, result)
+            for _concert, concert_result in expanded:
+                validate_event_assessment(concert_result)
+            if repairs:
+                logger.info(
+                    "Programme-analysis response repaired",
+                    extra={
+                        "event": "programme_analysis_repaired",
+                        "concert_ids": concert_ids,
+                        "repair_count": repairs,
+                    },
+                )
+            return result
+        except ValueError as error:
+            if repairs >= MAX_REPAIR_TURNS:
+                logger.error(
+                    "Programme-analysis response repair exhausted",
+                    extra={
+                        "event": "programme_analysis_repair_exhausted",
+                        "concert_ids": concert_ids,
+                        "repair_count": repairs,
+                        "error_message": str(error),
+                    },
+                )
+                raise
+            repairs += 1
+            logger.warning(
+                "Repairing invalid programme-analysis response",
                 extra={
-                    "event": "programme_analysis_interrupt_failed",
-                    "concert_ids": [concert.id for concert in group.concerts],
+                    "event": "programme_analysis_repair_started",
+                    "concert_ids": concert_ids,
+                    "repair_number": repairs,
+                    "error_message": str(error),
                 },
             )
-            raise CodexClientUnhealthyError(
-                "Timed-out Codex turn could not be interrupted safely"
-            ) from interrupt_error
-        raise TimeoutError(
-            f"Concert group programme analysis exceeded {timeout_seconds} seconds"
-        )
-    if result.error:
-        raise_for_codex_auth(str(result.error))
-        raise RuntimeError(str(result.error))
-    if not result.final_response:
-        raise RuntimeError("Codex returned no final response")
-    return json.loads(result.final_response)
+            prompt = (
+                "Your previous response failed deterministic validation. Return a complete "
+                "corrected response for the same concert group, not a patch. Do not add text "
+                "outside the structured response.\n\n"
+                f"Validation error: {error}\n"
+                f"Every expected concert ID must appear exactly once in both arrays: {concert_ids}"
+            )
 
 
 def expand_group_result(
@@ -552,13 +617,55 @@ def expand_group_result(
                     "unresolved_program": programme["unresolved_program"],
                     "event_updates": occurrence["event_updates"],
                     "location_resolution": occurrence["location_resolution"],
+                    "event_assessment": occurrence.get("event_assessment")
+                    or fallback_event_assessment(occurrence["source_url"]),
                 },
             )
         )
     return expanded
 
 
+def fallback_event_assessment(source_url: str) -> dict[str, Any]:
+    """Safely load pre-hardening cached/test results; live schema requires this field."""
+    return {
+        "decision": "uncertain",
+        "category": UNCERTAIN_CATEGORY,
+        "rationale": "No structured inclusion assessment was recorded.",
+        "evidence_urls": [source_url],
+    }
+
+
+def validate_event_assessment(result: dict[str, Any]) -> None:
+    assessment = result.get("event_assessment") or fallback_event_assessment(
+        result["source_url"]
+    )
+    decision = assessment["decision"]
+    validate_decision_category(decision, assessment["category"])
+    if not assessment["rationale"].strip():
+        raise ValueError("event assessment rationale must not be empty")
+    if not assessment["evidence_urls"] or not all(
+        value.strip() for value in assessment["evidence_urls"]
+    ):
+        raise ValueError("event assessment must include at least one evidence URL")
+    status = result["status"]
+    empty_programme = not (
+        result["composers"] or result["program"] or result["unresolved_program"]
+    )
+    if decision in {"nonclassical", "not_event"}:
+        if status != "not_applicable" or not empty_programme:
+            raise ValueError(
+                f"{decision} event assessments require an empty not_applicable programme result"
+            )
+    elif status == "not_applicable":
+        raise ValueError(
+            "not_applicable programme status requires nonclassical or not_event assessment"
+        )
+    if status == "page_unavailable" and decision != "uncertain":
+        raise ValueError("page_unavailable programme status requires uncertain assessment")
+
+
 def validate_result(conn, concert: Concert, result: dict[str, Any]) -> None:
+    validate_event_assessment(result)
     status = result["status"]
     composers = result["composers"]
     program = result["program"]
@@ -579,16 +686,16 @@ def validate_result(conn, concert: Concert, result: dict[str, Any]) -> None:
         )
     if status == "composer_only" and (not composers or program):
         raise ValueError("A composer_only result must contain composers and no programme entries")
-    if status in {"no_program", "page_unavailable"} and (composers or program):
+    if status in {"no_program", "page_unavailable", "not_applicable"} and (composers or program):
         raise ValueError(f"A {status} result must not contain catalogue entries")
-    if status in {"composer_only", "no_program", "page_unavailable"} and unresolved_program:
+    if status in {"composer_only", "no_program", "page_unavailable", "not_applicable"} and unresolved_program:
         raise ValueError(f"A {status} result must not contain unresolved programme entries")
     if result["source_url"].strip() == "":
         raise ValueError("source_url must not be empty")
     for entry in unresolved_program:
         if not all(entry[field].strip() for field in ("programme_label", "evidence", "reason")):
             raise ValueError("Unresolved programme fields must not be empty")
-    if status in {"ambiguous", "no_program", "page_unavailable"}:
+    if status in {"ambiguous", "no_program", "page_unavailable", "not_applicable"}:
         return
     with conn.cursor() as cursor:
         for composer in composers:
@@ -1035,6 +1142,69 @@ def apply_location_resolution(cursor, concert: Concert, resolution: dict[str, An
         )
 
 
+def persist_inclusion_assessment(
+    cursor,
+    concert: Concert,
+    result: dict[str, Any],
+    model: str,
+) -> bool:
+    assessment = result.get("event_assessment") or fallback_event_assessment(
+        result["source_url"]
+    )
+    cursor.execute(
+        """
+        SELECT id
+        FROM potential_event
+        WHERE title = %s AND date = %s AND url = %s
+        ORDER BY id
+        LIMIT 1
+        """,
+        (concert.title, concert.date, concert.url),
+    )
+    potential_row = cursor.fetchone()
+    potential_event_id = potential_row[0] if potential_row else None
+    cursor.execute(
+        """
+        INSERT INTO event_inclusion_assessment
+            (potential_event_id, classical_concert_id, origin, decision,
+             category, rationale, evidence_urls, source_url, model)
+        VALUES (%s, %s, 'programme_analyzer', %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            potential_event_id,
+            concert.id,
+            assessment["decision"],
+            assessment["category"],
+            assessment["rationale"].strip(),
+            Json(assessment["evidence_urls"]),
+            assessment["evidence_urls"][0],
+            model,
+        ),
+    )
+    if assessment["decision"] not in {"nonclassical", "not_event"}:
+        return False
+    cursor.execute(
+        """
+        UPDATE classical_concert
+        SET inclusion_status = 'quarantined',
+            program_analysis_eligible = false,
+            updated_at = now()
+        WHERE id = %s AND inclusion_status = 'included'
+        """,
+        (concert.id,),
+    )
+    changed = cursor.rowcount > 0
+    cursor.execute(
+        "DELETE FROM classical_concert_work WHERE classical_concert_id = %s",
+        (concert.id,),
+    )
+    cursor.execute(
+        "DELETE FROM classical_concert_composer WHERE classical_concert_id = %s",
+        (concert.id,),
+    )
+    return changed
+
+
 def persist_result(
     conn,
     concert: Concert,
@@ -1044,7 +1214,13 @@ def persist_result(
     location_resolution: dict[str, Any] | None = None,
 ) -> None:
     status = result["status"]
-    completed = status in {"complete", "composer_only", "expired_no_program", "failed"}
+    completed = status in {
+        "complete",
+        "composer_only",
+        "not_applicable",
+        "expired_no_program",
+        "failed",
+    }
     if event_updates is None:
         event_updates = validate_event_updates(conn, concert, result.get("event_updates", []))
     try:
@@ -1054,9 +1230,11 @@ def persist_result(
                     "UPDATE classical_concert SET last_verified_at = now() WHERE id = %s",
                     (concert.id,),
                 )
-            apply_event_updates(cursor, concert, event_updates, model)
-            if location_resolution:
-                apply_location_resolution(cursor, concert, location_resolution, model)
+            if status != "not_applicable":
+                apply_event_updates(cursor, concert, event_updates, model)
+                if location_resolution:
+                    apply_location_resolution(cursor, concert, location_resolution, model)
+            quarantined = persist_inclusion_assessment(cursor, concert, result, model)
             cursor.execute(
                 "SELECT status FROM concert_program_analysis WHERE classical_concert_id = %s",
                 (concert.id,),
@@ -1128,6 +1306,16 @@ def persist_result(
                 ),
             )
         conn.commit()
+        if quarantined:
+            logger.warning(
+                "Programme analysis quarantined an included concert",
+                extra={
+                    "event": "programme_analysis_concert_quarantined",
+                    "concert_id": concert.id,
+                    "decision": result["event_assessment"]["decision"],
+                    "category": result["event_assessment"]["category"],
+                },
+            )
     except Exception:
         conn.rollback()
         raise
@@ -1335,6 +1523,8 @@ async def analyze_concert_group(
                     "event": "programme_analysis_completed",
                     "concert_id": concert.id,
                     "status": result["status"],
+                    "inclusion_decision": result["event_assessment"]["decision"],
+                    "inclusion_category": result["event_assessment"]["category"],
                     "composer_count": len(result.get("composers") or []),
                     "unresolved_count": len(result.get("unresolved_program") or []),
                     "commit": commit,

@@ -88,6 +88,34 @@ class PotentialEventAnalyzerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incompatible category"):
             analyzer.validate_result(page, result)
 
+    def test_result_requires_nonempty_evidence(self):
+        page = analyzer.candidate_groups([self.event(1), self.event(2)])
+        result = self.valid_result()
+        result["classifications"][0]["evidence_urls"] = []
+        with self.assertRaisesRegex(ValueError, "at least one evidence URL"):
+            analyzer.validate_result(page, result)
+
+    def test_non_event_finding_requires_not_event_decision(self):
+        page = analyzer.candidate_groups([self.event(1), self.event(2)])
+        result = self.valid_result()
+        result["source_findings"] = [
+            {
+                "code": "non_event_ingestion",
+                "severity": "error",
+                "event_ids": [1, 2],
+                "summary": "This is an ensemble membership page.",
+                "evidence_urls": ["https://example.test/events/1"],
+            }
+        ]
+        with self.assertRaisesRegex(ValueError, "require not_event"):
+            analyzer.validate_result(page, result)
+
+        result["classifications"][0].update(
+            decision="not_event",
+            category="membership_course_or_rehearsal",
+        )
+        analyzer.validate_result(page, result)
+
     def test_prompt_uses_nuanced_musical_boundary(self):
         page = analyzer.candidate_groups(
             [self.event(1, title="West Side Story", type="musical")]
@@ -116,8 +144,9 @@ class PotentialEventAnalyzerTests(unittest.TestCase):
         ]["properties"]["category"]["enum"]
 
         self.assertEqual(schema_categories, analyzer.ALL_CATEGORIES)
+        prompt_lines = prompt.splitlines()
         for category in analyzer.ALL_CATEGORIES:
-            self.assertEqual(prompt.count(f"- {category}"), 1)
+            self.assertEqual(prompt_lines.count(f"- {category}"), 1)
         self.assertNotIn("{{#classical_categories}}", prompt)
         self.assertNotIn("{{#nonclassical_categories}}", prompt)
         self.assertNotIn("{{uncertain_category}}", prompt)
@@ -127,6 +156,14 @@ class PotentialEventAnalyzerTests(unittest.TestCase):
         historical = analyzer.eligibility_sql(include_past=True, force=False)
         self.assertIn("p.date >= CURRENT_DATE", automatic)
         self.assertNotIn("p.date >= CURRENT_DATE", historical)
+
+    def test_explicit_reanalysis_bypasses_existing_analysis_state(self):
+        eligibility = analyzer.eligibility_sql(
+            include_past=False,
+            force=False,
+            reanalyze=True,
+        )
+        self.assertEqual(eligibility, "p.date >= CURRENT_DATE")
 
     def test_machine_result_is_written_atomically(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -157,17 +194,75 @@ class PotentialEventAnalyzerTests(unittest.TestCase):
         connection = MagicMock()
         connection.cursor.return_value = cursor
         result = self.valid_result()
-        with patch.object(analyzer, "promote_classical_event"):
+        with patch.object(
+            analyzer,
+            "promote_classical_event",
+            return_value=("promoted", 11),
+        ):
             analyzer.persist_page_result(
                 connection,
                 run_id=9,
                 result=result,
                 model="gpt-test",
+                promote=True,
             )
 
         query, params = cursor.execute.call_args_list[0].args
         self.assertIn("pg_advisory_xact_lock", query)
         self.assertEqual(params, (analyzer.CONCERT_INSERT_ADVISORY_LOCK,))
+
+    def test_shadow_classification_never_calls_promotion(self):
+        cursor = MagicMock()
+        cursor.__enter__.return_value = cursor
+        connection = MagicMock()
+        connection.cursor.return_value = cursor
+        with (
+            patch.object(analyzer, "matching_concert", return_value=None),
+            patch.object(analyzer, "promote_classical_event") as promote,
+        ):
+            analyzer.persist_page_result(
+                connection,
+                run_id=9,
+                result=self.valid_result(),
+                model="gpt-test",
+                promote=False,
+            )
+        promote.assert_not_called()
+        self.assertTrue(
+            any(
+                "added = %s" in call.args[0]
+                for call in cursor.execute.call_args_list
+            )
+        )
+
+    def test_promotion_requires_commit(self):
+        with self.assertRaisesRegex(ValueError, "requires committed"):
+            analyzer.run(commit=False, promote=True)
+
+    def test_invalid_turn_is_repaired_before_returning(self):
+        page = analyzer.candidate_groups([self.event(1), self.event(2)])
+        missing = self.valid_result()
+        missing["classifications"][0]["event_ids"] = [1]
+        thread = MagicMock()
+        with patch.object(
+            analyzer,
+            "run_turn",
+            new=AsyncMock(side_effect=[missing, self.valid_result()]),
+        ) as run_turn:
+            result, repairs = __import__("asyncio").run(
+                analyzer.run_validated_turn(
+                    thread,
+                    "initial",
+                    page,
+                    "gpt-test",
+                    10,
+                    source="Example Hall",
+                    page_number=1,
+                )
+            )
+        self.assertEqual(result, self.valid_result())
+        self.assertEqual(repairs, 1)
+        self.assertIn("expected event ID", run_turn.await_args_list[1].args[1])
 
     def test_codex_turn_allows_read_only_lookup_commands_with_network(self):
         thread = MagicMock()

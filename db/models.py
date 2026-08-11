@@ -36,6 +36,11 @@ class ClassicalConcert(Base):
             "country_code_resolved IS NULL OR country_code_resolved ~ '^[A-Z]{2}$'",
             name="ck_classical_concert_country_code_resolved",
         ),
+        CheckConstraint(
+            "inclusion_status IN ('included', 'quarantined', 'rejected')",
+            name="ck_classical_concert_inclusion_status",
+        ),
+        Index("ix_classical_concert_inclusion_date", "inclusion_status", "date", "id"),
         Index("ix_classical_concert_date_time_id", "date", "time_from", "id"),
         Index(
             "ix_classical_concert_country_date_time_id",
@@ -75,6 +80,7 @@ class ClassicalConcert(Base):
     event_status = Column(String, nullable=False, server_default="scheduled")
     event_status_updated_at = Column(DateTime(timezone=True))
     last_verified_at = Column(DateTime(timezone=True))
+    inclusion_status = Column(String, nullable=False, server_default="included")
 
 
 class PotentialEvent(Base):
@@ -141,6 +147,10 @@ class PotentialEventClassificationRun(Base):
     classified_count = Column(Integer, nullable=False, server_default="0")
     uncertain_count = Column(Integer, nullable=False, server_default="0")
     error_count = Column(Integer, nullable=False, server_default="0")
+    repaired_count = Column(Integer, nullable=False, server_default="0")
+    blocked_promotion_count = Column(Integer, nullable=False, server_default="0")
+    promoted_count = Column(Integer, nullable=False, server_default="0")
+    shadow_classical_count = Column(Integer, nullable=False, server_default="0")
     findings = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     last_error = Column(Text)
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -193,6 +203,61 @@ class PotentialEventClassification(Base):
     next_attempt_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class EventInclusionAssessment(Base):
+    __tablename__ = "event_inclusion_assessment"
+    __table_args__ = (
+        CheckConstraint(
+            "potential_event_id IS NOT NULL OR classical_concert_id IS NOT NULL",
+            name="ck_event_inclusion_assessment_target",
+        ),
+        CheckConstraint(
+            "origin IN ('potential_classifier', 'programme_analyzer', 'manual')",
+            name="ck_event_inclusion_assessment_origin",
+        ),
+        CheckConstraint(
+            "decision IN ('classical', 'nonclassical', 'not_event', 'uncertain')",
+            name="ck_event_inclusion_assessment_decision",
+        ),
+        Index(
+            "ix_event_inclusion_assessment_potential",
+            "potential_event_id",
+            "created_at",
+        ),
+        Index(
+            "ix_event_inclusion_assessment_concert",
+            "classical_concert_id",
+            "created_at",
+        ),
+        Index(
+            "ix_event_inclusion_assessment_decision",
+            "decision",
+            "created_at",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    potential_event_id = Column(
+        Integer,
+        ForeignKey("potential_event.id", ondelete="CASCADE"),
+    )
+    classical_concert_id = Column(
+        Integer,
+        ForeignKey("classical_concert.id", ondelete="CASCADE"),
+    )
+    classification_run_id = Column(
+        BigInteger,
+        ForeignKey("potential_event_classification_run.id", ondelete="SET NULL"),
+    )
+    origin = Column(String, nullable=False)
+    decision = Column(String, nullable=False)
+    category = Column(String, nullable=False)
+    rationale = Column(Text, nullable=False)
+    evidence_urls = Column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    source_url = Column(Text)
+    model = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class City(Base):

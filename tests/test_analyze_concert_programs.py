@@ -34,6 +34,15 @@ def geonames_record(external_id="3074729", country="CZ", *names):
     )
 
 
+def classical_assessment(url="https://example.test"):
+    return {
+        "decision": "classical",
+        "category": "chamber_or_recital",
+        "rationale": "A concrete classical concert is advertised.",
+        "evidence_urls": [url],
+    }
+
+
 def no_program_group_result(concerts):
     return {
         "programme_groups": [{
@@ -49,6 +58,7 @@ def no_program_group_result(concerts):
             "source_url": concert.url,
             "event_updates": [],
             "location_resolution": not_needed_location(),
+            "event_assessment": classical_assessment(concert.url),
         } for concert in concerts],
     }
 
@@ -135,6 +145,10 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         )
         self.assertIn("Event URL: https://example.test/event", prompt)
         self.assertIn("partition the supplied concert IDs", prompt)
+        self.assertIn("premise may be wrong", prompt)
+        self.assertIn("season overview", prompt)
+        self.assertIn("not_applicable", prompt)
+        self.assertIn("Never use no_program as a proxy", prompt)
 
     def test_groups_by_source_normalized_title_and_source_url_without_size_cap(self):
         concerts = [
@@ -268,6 +282,51 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not contain"):
             analyzer.validate_result(MagicMock(), concert, result)
 
+    def test_not_applicable_requires_explicit_nonclassical_assessment(self):
+        concert = analyzer.Concert(
+            1, "Guided tour", date.today(), "https://example.test/tour", None
+        )
+        result = {
+            "status": "not_applicable",
+            "source_url": concert.url,
+            "notes": "This is a venue tour.",
+            "composers": [],
+            "program": [],
+            "unresolved_program": [],
+            "event_assessment": {
+                "decision": "not_event",
+                "category": "service_or_addon",
+                "rationale": "The page is a venue service rather than a performance.",
+                "evidence_urls": [concert.url],
+            },
+        }
+        analyzer.validate_result(MagicMock(), concert, result)
+        result["event_assessment"] = classical_assessment(concert.url)
+        with self.assertRaisesRegex(ValueError, "not_applicable"):
+            analyzer.validate_result(MagicMock(), concert, result)
+
+    def test_no_program_cannot_carry_nonclassical_assessment(self):
+        result = {
+            "status": "no_program",
+            "source_url": "https://example.test/rap",
+            "notes": "No classical programme.",
+            "composers": [],
+            "program": [],
+            "unresolved_program": [],
+            "event_assessment": {
+                "decision": "nonclassical",
+                "category": "nonclassical_music",
+                "rationale": "This is a rap concert.",
+                "evidence_urls": ["https://example.test/rap"],
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "not_applicable"):
+            analyzer.validate_result(
+                MagicMock(),
+                analyzer.Concert(1, "Rap", date.today(), result["source_url"], None),
+                result,
+            )
+
     def test_ambiguous_result_requires_only_unresolved_entries(self):
         concert = analyzer.Concert(1, "Test", date.today(), "https://example.test", None)
         result = {
@@ -308,6 +367,7 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
 
         query = cursor.execute.call_args.args[0]
         self.assertIn("c.program_analysis_eligible = true", query)
+        self.assertIn("c.inclusion_status = 'included'", query)
         self.assertIn("c.source_url", query)
         self.assertIn("c.date >= CURRENT_DATE", query)
         self.assertIn("a.attempts < %s", query)
@@ -397,6 +457,46 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         upsert = next(query for query in executed if "INSERT INTO concert_program_analysis" in query)
         self.assertIn("EXCLUDED.status = 'no_program'", upsert)
         conn.commit.assert_called_once()
+
+    def test_not_applicable_quarantines_and_unlinks_concert(self):
+        conn = MagicMock()
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [(77,), None]
+        cursor.rowcount = 1
+        concert = analyzer.Concert(
+            9, "Season overview", date.today(), "https://example.test/season", None
+        )
+        result = {
+            "status": "not_applicable",
+            "source_url": concert.url,
+            "notes": "This is a season overview.",
+            "composers": [],
+            "program": [],
+            "unresolved_program": [],
+            "event_assessment": {
+                "decision": "not_event",
+                "category": "season_or_overview",
+                "rationale": "No concrete performance occurrence is advertised.",
+                "evidence_urls": [concert.url],
+            },
+        }
+
+        analyzer.persist_result(
+            conn,
+            concert,
+            result,
+            "gpt-test",
+            event_updates=[],
+            location_resolution=None,
+        )
+
+        queries = [call.args[0] for call in cursor.execute.call_args_list]
+        self.assertTrue(any("INSERT INTO event_inclusion_assessment" in q for q in queries))
+        self.assertTrue(any("inclusion_status = 'quarantined'" in q for q in queries))
+        self.assertTrue(any("DELETE FROM classical_concert_work" in q for q in queries))
+        self.assertTrue(any("DELETE FROM classical_concert_composer" in q for q in queries))
+        analysis = next(q for q in queries if "INSERT INTO concert_program_analysis" in q)
+        self.assertIn("concert_program_analysis", analysis)
 
     @patch.object(analyzer, "_resolve_work", return_value=96)
     @patch.object(analyzer, "_resolve_composer", return_value=1)
@@ -1227,6 +1327,44 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         with self.assertRaisesRegex(TimeoutError, "exceeded"):
             asyncio.run(analyzer.run_agent(codex, group, "gpt-5.6-terra", 0.01))
         turn.interrupt.assert_awaited_once()
+
+    def test_invalid_group_response_gets_correction_turn(self):
+        concerts = [
+            analyzer.Concert(
+                index,
+                "Shared",
+                date.today(),
+                f"https://example.test/{index}",
+                None,
+                source="Example",
+                source_url="https://example.test/series",
+            )
+            for index in (1, 2)
+        ]
+        group = analyzer.group_concerts(concerts)[0]
+        invalid = no_program_group_result(concerts)
+        invalid["programme_groups"][0]["concert_ids"] = [1]
+        valid = no_program_group_result(concerts)
+        turns = []
+        for payload in (invalid, valid):
+            turn = MagicMock()
+            turn.run = AsyncMock(
+                return_value=MagicMock(
+                    error=None,
+                    final_response=json.dumps(payload),
+                )
+            )
+            turns.append(turn)
+        thread = MagicMock()
+        thread.turn = AsyncMock(side_effect=turns)
+        codex = MagicMock()
+        codex.thread_start = AsyncMock(return_value=thread)
+
+        result = asyncio.run(analyzer.run_agent(codex, group, "gpt-test", 30))
+
+        self.assertEqual(result, valid)
+        self.assertEqual(thread.turn.await_count, 2)
+        self.assertIn("Validation error", thread.turn.await_args_list[1].args[0])
 
     def test_failed_timeout_interrupt_marks_codex_client_unhealthy(self):
         codex = MagicMock()

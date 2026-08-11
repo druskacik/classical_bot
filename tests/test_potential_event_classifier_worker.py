@@ -34,6 +34,15 @@ class PotentialEventClassifierWorkerTests(unittest.TestCase):
         with patch.dict(os.environ, {"POTENTIAL_EVENT_CLASSIFIER_ENABLED": "true"}):
             self.assertTrue(worker_module.enabled_from_environment())
 
+    def test_promotion_is_disabled_by_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(worker_module.promotion_enabled_from_environment())
+        with patch.dict(
+            os.environ,
+            {"POTENTIAL_EVENT_CLASSIFIER_PROMOTION_ENABLED": "true"},
+        ):
+            self.assertTrue(worker_module.promotion_enabled_from_environment())
+
     def test_source_command_uses_only_one_explicit_turn_timeout(self):
         with tempfile.TemporaryDirectory() as temporary:
             result_path = Path(temporary) / "result.json"
@@ -60,6 +69,31 @@ class PotentialEventClassifierWorkerTests(unittest.TestCase):
                 outcome = worker.run_source()
         self.assertEqual(outcome.status, "completed")
         self.assertEqual(outcome.source, "Example Hall")
+
+    def test_source_command_promotes_only_when_enabled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result_path = Path(temporary) / "result.json"
+            worker = worker_module.PotentialEventClassifierWorker(
+                self.config(promotion_enabled=True),
+                result_path=result_path,
+            )
+
+            def run_child(command, _stop_event):
+                self.assertIn("--promote", command)
+                result_path.write_text(
+                    json.dumps(
+                        {
+                            "status": "empty",
+                            "selected_count": 0,
+                            "source": None,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return 0
+
+            with patch.object(worker.supervisor, "run", side_effect=run_child):
+                worker.run_source()
 
     def test_empty_queue_waits_before_polling_again(self):
         worker = worker_module.PotentialEventClassifierWorker(self.config())

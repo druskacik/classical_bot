@@ -40,6 +40,12 @@ def enabled_from_environment() -> bool:
     }
 
 
+def promotion_enabled_from_environment() -> bool:
+    return os.getenv(
+        "POTENTIAL_EVENT_CLASSIFIER_PROMOTION_ENABLED", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def log(message: str) -> None:
     event = "potential_event_classifier_worker_status"
     if message.startswith("Starting potential-event source"):
@@ -59,6 +65,7 @@ class ClassifierWorkerConfig:
     idle_interval_seconds: int
     failure_backoff_seconds: int
     turn_timeout_seconds: int
+    promotion_enabled: bool = False
 
     @classmethod
     def from_environment(cls) -> "ClassifierWorkerConfig":
@@ -75,6 +82,7 @@ class ClassifierWorkerConfig:
                 os.getenv("POTENTIAL_EVENT_CLASSIFIER_TURN_TIMEOUT_SECONDS", "1800"),
                 "POTENTIAL_EVENT_CLASSIFIER_TURN_TIMEOUT_SECONDS",
             ),
+            promotion_enabled=promotion_enabled_from_environment(),
         )
 
 
@@ -157,6 +165,8 @@ class PotentialEventClassifierWorker:
             "--result-path",
             str(self.result_path),
         ]
+        if self.config.promotion_enabled:
+            command.append("--promote")
         log("Starting potential-event source classification")
         return_code = self.supervisor.run(command, self.stop_event)
         outcome = load_result(self.result_path, return_code)
