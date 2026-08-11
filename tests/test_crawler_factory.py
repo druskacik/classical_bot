@@ -52,6 +52,15 @@ def blocked_text(url: str, country_code: str, attempted: date) -> str:
     )
 
 
+def unseeded_crawler_paths(
+    existing_paths: set[str], seeded_paths: set[str]
+) -> set[str]:
+    seeded_slugs = {Path(path).name for path in seeded_paths}
+    return {
+        path for path in existing_paths if Path(path).name not in seeded_slugs
+    }
+
+
 class SupervisorResultTests(unittest.TestCase):
     def test_result_is_written_with_claim_and_outcome_counts(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -253,10 +262,8 @@ class RegistryIdentityTests(unittest.TestCase):
                 + list((root / "crawlers").glob("*/*/BLOCKED.md"))
             )
         }
-        self.assertTrue(
-            existing_paths.issubset(seeded_paths),
-            existing_paths - seeded_paths,
-        )
+        missing_paths = unseeded_crawler_paths(existing_paths, seeded_paths)
+        self.assertFalse(missing_paths, missing_paths)
         with (
             root / "seeds/crawler_sources/0002_existing_crawlers.csv"
         ).open(newline="", encoding="utf-8") as handle:
@@ -266,6 +273,21 @@ class RegistryIdentityTests(unittest.TestCase):
         self.assertTrue(
             existing_seed_paths.issubset(existing_paths),
             existing_seed_paths - existing_paths,
+        )
+
+    def test_seed_coverage_allows_resolved_country_relocation(self):
+        seeded_paths = {"crawlers/fr/ensemblevocalorphee_com"}
+
+        self.assertFalse(
+            unseeded_crawler_paths(
+                {"crawlers/ch/ensemblevocalorphee_com"}, seeded_paths
+            )
+        )
+        self.assertEqual(
+            unseeded_crawler_paths(
+                {"crawlers/ch/unrelated_example"}, seeded_paths
+            ),
+            {"crawlers/ch/unrelated_example"},
         )
 
 
