@@ -2,7 +2,7 @@ Your role is to create a crawler for a website that may publish classical music 
 
 What should the crawler do:
 
-- locate all scrapeable concerts on the website, including past concerts when
+- locate all in-scope concerts on the website, including past concerts when
   the site still publishes them
 - create a universal script that scrapes the concert details
 
@@ -33,12 +33,38 @@ descriptive prose into city or venue. Never use the city itself as a placeholder
 venue. If an individual event's date, city, or venue cannot be extracted or
 defensibly inferred, skip that event instead of returning an invalid record.
 
-Decide whether the source is classical-only or broad. A classical-only source
-may use the default `upload_target='classical'`. A mixed theatre, festival,
-ticketing, or general cultural source must set `CrawlerConfig.upload_target` to
-`potential` so the Codex potential-event classifier reviews the events before
-they reach `classical_concert`.
-Do not upload every event from a mixed source directly as classical music.
+Before choosing the upload target, determine whether the source is
+classical-only or mixed and investigate whether the website or its API exposes
+first-party genre, category, discipline, event-type, series, or tag filters.
+Inspect `prompts/event_inclusion_guidance.mustache` and use it as the
+authoritative definition of project scope. A filter labelled only "classical"
+may be too narrow if related filters contain eligible opera, operetta, ballet or
+classical dance, contemporary art music, soundtrack concerts, classical
+crossover, qualifying musicals, or family concerts. Combine relevant filters
+when that is necessary to cover the project scope.
+
+Use a first-party filtered feed only after verifying that its stable query or
+API identifiers survive pagination and date ranges. Inspect representative
+detail pages from the included filters and relevant adjacent filters. Confirm
+that the selected feed contains concrete in-scope performances, does not
+systematically include season or festival overview pages, and does not omit an
+eligible category. A keyword search or title heuristic is not a reliable
+first-party category filter by itself.
+
+Choose the upload target using this order:
+
+- A classical-only source may use the default `upload_target='classical'`.
+- A mixed source may also use `classical` when stable first-party filters can be
+  combined into a sufficiently comprehensive feed and representative checks
+  show that every returned record is in scope.
+- Set `CrawlerConfig.upload_target` to `potential` when filtering is unavailable,
+  incomplete, ambiguous, based only on keywords, or known to include uncertain
+  or non-event records. In that case scrape the appropriate candidate feed so
+  the Codex potential-event classifier reviews it before promotion.
+
+Do not upload an unfiltered mixed-source feed directly as classical music. Do
+not select a narrow filter merely to avoid `potential` when that would drop
+other event types accepted by the project.
 
 What I mean by description: description is a long body of text related to the concert. It can be large and unstructured, and it's important that it includes details about which composers and works are being played (if this is on the website, of course). The reasoning behind this is that the description will be later parsed by AI to extract composers and works.
 
@@ -70,8 +96,8 @@ set `source_url` to the canonical source URL. The required constructor fields
 are `slug`, `source`, and `source_url`. The supported optional fields are
 `country_code`, `columns`, `upload_target`, `dedupe_subset`, `front_fields`, and
 `csv_path`. Do not invent or use unsupported aliases such as `name` or
-`csv_filename`. Use `upload_target="potential"` for a broad source as described
-above; otherwise retain `"classical"`.
+`csv_filename`. Use `upload_target="potential"` for a candidate feed requiring
+classification as described above; otherwise retain `"classical"`.
 
 After building, first run a cheap import and instantiation check with system
 `python`, not `uv`, to catch syntax errors and an invalid `CrawlerConfig`
@@ -80,6 +106,12 @@ inspect representative output records, including their date/city/venue pairs
 and duplicates. Do not invoke the module's production `main()` during testing.
 The outer worker performs the authoritative full scrape, so you do not need to
 repeat a slow full-catalogue run solely for final validation.
+
+In your final report, state which first-party filters and exact values you
+tested, whether they persisted across pagination, any observed coverage or
+contamination limitations, the selected feed, and why its upload target is
+`classical` or `potential`. If the source exposes no applicable filters, say so
+explicitly.
 
 Only modify the expected new crawler directory. Do not modify shared crawler
 code, dependencies, workflows, prompts, configuration, environment files, or

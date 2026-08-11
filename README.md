@@ -117,7 +117,12 @@ canonical repertoire is not required when classical performance practice is
 clearly central; this includes substantial symphonic modern-song arrangements,
 family opera or orchestral storytelling, and contemporary dance built around a
 classical score or live classical forces. Vague branding or an incidental
-orchestra mention remains insufficient.
+orchestra mention remains insufficient, but an orchestra or chamber ensemble
+explicitly billed as a principal or co-equal performer is direct evidence of
+classical crossover even with jazz, cabaret, popular-song, vocal, or rhythm-section
+elements. A curated Kurt Weill programme led by a string trio is therefore
+eligible. One validated `classical` assessment is sufficient for promotion;
+repeated model consensus is not required, while `uncertain` never promotes.
 
 Programme responses are structurally and catalogue-validated before acceptance.
 Unknown composer/work IDs and work/composer ownership mismatches are returned to
