@@ -130,6 +130,15 @@ class PotentialEventAnalyzerTests(unittest.TestCase):
         self.assertIn("West Side Story", prompt)
         self.assertIn("not automatically", prompt)
         self.assertIn("commercial musical-theatre", prompt)
+        guidance = analyzer.load_inclusion_guidance()
+        self.assertEqual(prompt.count(guidance), 1)
+        normalized_prompt = " ".join(prompt.split())
+        self.assertIn("Named canonical repertoire is not required", normalized_prompt)
+        self.assertIn("billed symphonic collaborations with modern artists", normalized_prompt)
+        self.assertIn("Family and children's labels are neutral", normalized_prompt)
+        self.assertIn("contemporary dance or ballet", normalized_prompt)
+        self.assertIn("Seasonal concerts by", normalized_prompt)
+        self.assertIn("Vague marketing", normalized_prompt)
 
     def test_rendered_prompt_categories_come_from_schema_definitions(self):
         prompt = analyzer.render_prompt(

@@ -111,7 +111,19 @@ run and `--promote` only when publication is intentional. Use `--source NAME
 by musical substance rather than its label:
 classically substantial works and concert/orchestral presentations such as
 Bernstein's *West Side Story* are eligible; routine commercial productions
-without a meaningful classical connection are not.
+without a meaningful classical connection are not. The same inclusion guidance
+is used by potential-event classification and programme extraction. Named
+canonical repertoire is not required when classical performance practice is
+clearly central; this includes substantial symphonic modern-song arrangements,
+family opera or orchestral storytelling, and contemporary dance built around a
+classical score or live classical forces. Vague branding or an incidental
+orchestra mention remains insufficient.
+
+Programme responses are structurally and catalogue-validated before acceptance.
+Unknown composer/work IDs and work/composer ownership mismatches are returned to
+the same Codex thread for up to two complete correction turns. Database,
+authentication, capacity, transport, and timeout failures remain technical
+failures handled by the existing retry and supervision paths.
 
 Structure:
 

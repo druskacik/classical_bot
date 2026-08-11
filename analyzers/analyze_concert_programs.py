@@ -31,6 +31,7 @@ from analyzers.event_inclusion import (
     NOT_EVENT_CATEGORY_ORDER,
     UNCERTAIN_CATEGORY,
     assessment_schema,
+    load_inclusion_guidance,
     validate_decision_category,
 )
 from crawlers.cities import normalize_city_key
@@ -325,6 +326,7 @@ def render_prompt(group: ConcertGroup) -> str:
             "concert_count": len(group.concerts),
             "descriptions": descriptions,
             "occurrences": occurrences,
+            "event_inclusion_guidance": load_inclusion_guidance(),
             "classical_categories": list(CLASSICAL_CATEGORY_ORDER),
             "nonclassical_categories": list(NONCLASSICAL_CATEGORY_ORDER),
             "not_event_categories": list(NOT_EVENT_CATEGORY_ORDER),
@@ -520,9 +522,7 @@ async def run_agent(
             raise RuntimeError("Codex returned no final response")
         result = json.loads(response.final_response)
         try:
-            expanded = expand_group_result(group, result)
-            for _concert, concert_result in expanded:
-                validate_event_assessment(concert_result)
+            validate_group_result(group, result)
             if repairs:
                 logger.info(
                     "Programme-analysis response repaired",
@@ -718,6 +718,30 @@ def validate_result(conn, concert: Concert, result: dict[str, Any]) -> None:
                     raise ValueError(f"Unknown work ID {work['existing_id']}")
                 if composer["existing_id"] is None or row[0] != composer["existing_id"]:
                     raise ValueError("Existing work does not belong to the selected existing composer")
+
+
+def validate_group_result(
+    group: ConcertGroup,
+    result: dict[str, Any],
+) -> list[tuple[Concert, dict[str, Any]]]:
+    expanded = expand_group_result(group, result)
+    needs_catalogue = any(
+        concert_result["status"] in {"complete", "partial", "composer_only"}
+        for _concert, concert_result in expanded
+    )
+    conn = get_connection() if needs_catalogue else None
+    try:
+        if conn is not None:
+            conn.set_session(readonly=True)
+        for concert, concert_result in expanded:
+            try:
+                validate_result(conn, concert, concert_result)
+            except ValueError as error:
+                raise ValueError(f"Concert {concert.id}: {error}") from error
+    finally:
+        if conn is not None:
+            conn.close()
+    return expanded
 
 
 def validate_event_updates(
