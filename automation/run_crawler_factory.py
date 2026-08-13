@@ -671,6 +671,10 @@ def attempt_source(
                     "scope_report_path": str(scope_report),
                 },
             )
+        if result.get("builder_error") and not changed_paths(workspace):
+            stage = "builder"
+            result["error"] = result["builder_error"]
+            return result
         validate_change_scope(workspace, initial_directory)
         stage = "geography_resolution"
         geographic_scope, country_code = generated_geography(workspace / directory)

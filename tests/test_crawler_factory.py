@@ -684,6 +684,43 @@ class AttemptTests(unittest.TestCase):
         self.assertEqual(result["auth_reason_code"], "refresh_token_revoked")
         self.assertEqual(result["failure_stage"], "builder")
 
+    def test_builder_error_is_preserved_when_no_changes_are_produced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            run_dir = root / "runs"
+            workspace.mkdir()
+            run_dir.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+            original_run_command = factory.run_command
+
+            def fake_run_command(command, **kwargs):
+                if any(str(part).endswith("build_crawlers_with_codex.py") for part in command):
+                    report = Path(command[command.index("--results") + 1])
+                    report.write_text(
+                        json.dumps(
+                            [{
+                                "status": "generation_failed",
+                                "error": "Selected model is at capacity",
+                            }]
+                        ),
+                        encoding="utf-8",
+                    )
+                    (workspace / "scratch.html").write_text("temporary", encoding="utf-8")
+                    return subprocess.CompletedProcess(command, 1, "", "")
+                return original_run_command(command, **kwargs)
+
+            with patch.object(factory, "run_command", side_effect=fake_run_command):
+                result = attempt_source(workspace, run_dir, self.SOURCE, 30, {})
+
+        self.assertEqual(result["status"], "generation_failed")
+        self.assertEqual(result["builder_status"], "generation_failed")
+        self.assertEqual(result["builder_error"], "Selected model is at capacity")
+        self.assertEqual(result["error"], "Selected model is at capacity")
+        self.assertEqual(result["failure_stage"], "builder")
+        self.assertEqual(result["generation_warning"], "builder exited with status 1")
+        self.assertFalse((workspace / "scratch.html").exists())
+
     def test_untracked_scratch_artifact_is_cleaned_before_validation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
