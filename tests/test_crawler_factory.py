@@ -183,6 +183,59 @@ class GeneratedGeographyTests(unittest.TestCase):
             Path("crawlers/common/example_com"),
         )
 
+    def test_module_constant_resolves_country(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "crawlers/de/example_es"
+            directory.mkdir(parents=True)
+            (directory / "main.py").write_text(
+                'COUNTRY_CODE = "es"\n'
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n",
+                encoding="utf-8",
+            )
+
+            scope, country = generated_geography(directory)
+
+        self.assertEqual((scope, country), ("country", "ES"))
+
+    def test_annotated_module_constant_resolves_multi_country(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "crawlers/us/example_com"
+            directory.mkdir(parents=True)
+            (directory / "main.py").write_text(
+                "COUNTRY_CODE: str | None = None\n"
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n",
+                encoding="utf-8",
+            )
+
+            scope, country = generated_geography(directory)
+
+        self.assertEqual((scope, country), ("multi_country", None))
+
+    def test_unresolved_country_constant_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "crawlers/de/example_de"
+            directory.mkdir(parents=True)
+            (directory / "main.py").write_text(
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unresolved module constant"):
+                generated_geography(directory)
+
+    def test_computed_country_constant_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "crawlers/de/example_de"
+            directory.mkdir(parents=True)
+            (directory / "main.py").write_text(
+                'COUNTRY_CODE = "de".upper()\n'
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unresolved module constant"):
+                generated_geography(directory)
+
     def test_relocation_preserves_generated_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -1169,6 +1222,42 @@ class PullRequestScopeTests(unittest.TestCase):
             result = validate_directory(workspace, directory)
 
         self.assertEqual(result, {"status": "passed", "kind": "crawler"})
+
+    def test_common_crawler_accepts_annotated_none_constant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            directory = Path("crawlers/common/example_com")
+            main_path = workspace / directory / "main.py"
+            main_path.parent.mkdir(parents=True)
+            main_path.write_text(
+                "COUNTRY_CODE: str | None = None\n"
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n"
+                "def main():\n"
+                "    ExampleCrawler().run()\n",
+                encoding="utf-8",
+            )
+
+            result = validate_directory(workspace, directory)
+
+        self.assertEqual(result, {"status": "passed", "kind": "crawler"})
+
+    def test_unresolved_country_constant_is_rejected_by_pr_validator(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            directory = Path("crawlers/cz/example_cz")
+            main_path = workspace / directory / "main.py"
+            main_path.parent.mkdir(parents=True)
+            main_path.write_text(
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n"
+                "def main():\n"
+                "    ExampleCrawler().run()\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                PullRequestValidationError, "literal ISO code or None"
+            ):
+                validate_directory(workspace, directory)
 
     def test_main_may_run_a_named_crawler_instance(self):
         with tempfile.TemporaryDirectory() as temporary:

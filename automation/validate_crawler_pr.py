@@ -7,6 +7,11 @@ import re
 import subprocess
 from pathlib import Path
 
+from automation.crawler_config_ast import (
+    module_literal_constants,
+    resolve_module_literal,
+)
+
 
 class PullRequestValidationError(RuntimeError):
     pass
@@ -144,6 +149,7 @@ def validate_directory(workspace: Path, directory: Path) -> dict:
             f"{directory} must use structured logging instead of print()"
         )
     configured_countries = []
+    constants = module_literal_constants(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -157,7 +163,9 @@ def validate_directory(workspace: Path, directory: Path) -> dict:
         for keyword in node.keywords:
             if keyword.arg == "country_code":
                 try:
-                    configured_countries.append(ast.literal_eval(keyword.value))
+                    configured_countries.append(
+                        resolve_module_literal(keyword.value, constants)
+                    )
                 except (ValueError, TypeError) as exc:
                     raise PullRequestValidationError(
                         f"{directory} country_code must be a literal ISO code or None"

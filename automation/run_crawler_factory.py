@@ -23,6 +23,10 @@ from dotenv import load_dotenv
 from observability import configure_logging
 
 from automation.codex_auth import codex_auth_reason
+from automation.crawler_config_ast import (
+    module_literal_constants,
+    resolve_module_literal,
+)
 from automation.crawler_registry import CrawlerRegistry
 from build_crawlers_with_codex import MODEL, country_code_for_url, crawler_folder_name
 
@@ -155,6 +159,7 @@ def generated_geography(crawler_path: Path) -> tuple[str, str | None]:
     main_path = crawler_path / "main.py"
     if main_path.exists():
         tree = ast.parse(main_path.read_text(encoding="utf-8"), str(main_path))
+        constants = module_literal_constants(tree)
         values = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -168,7 +173,7 @@ def generated_geography(crawler_path: Path) -> tuple[str, str | None]:
                 continue
             for keyword in node.keywords:
                 if keyword.arg == "country_code":
-                    values.append(ast.literal_eval(keyword.value))
+                    values.append(resolve_module_literal(keyword.value, constants))
         if len(values) != 1:
             raise ValueError("generated crawler must declare country_code exactly once")
         country_code = values[0]
