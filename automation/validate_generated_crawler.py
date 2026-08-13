@@ -35,9 +35,14 @@ def module_name(crawler_directory: Path) -> str:
         crawler_directory.is_absolute()
         or len(crawler_directory.parts) != 3
         or crawler_directory.parts[0] != "crawlers"
-        or len(crawler_directory.parts[1]) != 2
+        or (
+            len(crawler_directory.parts[1]) != 2
+            and crawler_directory.parts[1] != "common"
+        )
     ):
-        raise ValueError("crawler directory must be crawlers/<country>/<slug>")
+        raise ValueError(
+            "crawler directory must be crawlers/<country>/<slug> or crawlers/common/<slug>"
+        )
     return ".".join((*crawler_directory.parts, "main"))
 
 

@@ -1,10 +1,12 @@
 import unittest
 from datetime import date
+from pathlib import Path
 from unittest.mock import Mock
 
 import pandas as pd
 
 from automation.validate_generated_crawler import (
+    module_name,
     runtime_failure_kind,
     validate_records,
 )
@@ -56,6 +58,26 @@ class ExampleCrawler(BaseCrawler):
 
 
 class RecordValidationTests(unittest.TestCase):
+    def test_module_name_accepts_country_and_common_directories(self):
+        self.assertEqual(
+            module_name(Path("crawlers/cz/example_cz")),
+            "crawlers.cz.example_cz.main",
+        )
+        self.assertEqual(
+            module_name(Path("crawlers/common/example_com")),
+            "crawlers.common.example_com.main",
+        )
+
+    def test_module_name_rejects_malformed_directories(self):
+        for directory in (
+            Path("crawlers/europe/example"),
+            Path("crawlers/cz"),
+            Path("other/cz/example"),
+        ):
+            with self.subTest(directory=directory):
+                with self.assertRaisesRegex(ValueError, "crawler directory must be"):
+                    module_name(directory)
+
     def test_accepts_past_record_with_optional_fields_missing(self):
         self.assertEqual(
             validate_records([valid_record(type=None, time_from=None, description=None)]),

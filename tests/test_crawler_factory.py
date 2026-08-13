@@ -183,6 +183,59 @@ class GeneratedGeographyTests(unittest.TestCase):
             Path("crawlers/common/example_com"),
         )
 
+    def test_module_constant_resolves_country(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "crawlers/de/example_es"
+            directory.mkdir(parents=True)
+            (directory / "main.py").write_text(
+                'COUNTRY_CODE = "es"\n'
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n",
+                encoding="utf-8",
+            )
+
+            scope, country = generated_geography(directory)
+
+        self.assertEqual((scope, country), ("country", "ES"))
+
+    def test_annotated_module_constant_resolves_multi_country(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "crawlers/us/example_com"
+            directory.mkdir(parents=True)
+            (directory / "main.py").write_text(
+                "COUNTRY_CODE: str | None = None\n"
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n",
+                encoding="utf-8",
+            )
+
+            scope, country = generated_geography(directory)
+
+        self.assertEqual((scope, country), ("multi_country", None))
+
+    def test_unresolved_country_constant_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "crawlers/de/example_de"
+            directory.mkdir(parents=True)
+            (directory / "main.py").write_text(
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unresolved module constant"):
+                generated_geography(directory)
+
+    def test_computed_country_constant_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "crawlers/de/example_de"
+            directory.mkdir(parents=True)
+            (directory / "main.py").write_text(
+                'COUNTRY_CODE = "de".upper()\n'
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unresolved module constant"):
+                generated_geography(directory)
+
     def test_relocation_preserves_generated_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -684,6 +737,43 @@ class AttemptTests(unittest.TestCase):
         self.assertEqual(result["auth_reason_code"], "refresh_token_revoked")
         self.assertEqual(result["failure_stage"], "builder")
 
+    def test_builder_error_is_preserved_when_no_changes_are_produced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "workspace"
+            run_dir = root / "runs"
+            workspace.mkdir()
+            run_dir.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+            original_run_command = factory.run_command
+
+            def fake_run_command(command, **kwargs):
+                if any(str(part).endswith("build_crawlers_with_codex.py") for part in command):
+                    report = Path(command[command.index("--results") + 1])
+                    report.write_text(
+                        json.dumps(
+                            [{
+                                "status": "generation_failed",
+                                "error": "Selected model is at capacity",
+                            }]
+                        ),
+                        encoding="utf-8",
+                    )
+                    (workspace / "scratch.html").write_text("temporary", encoding="utf-8")
+                    return subprocess.CompletedProcess(command, 1, "", "")
+                return original_run_command(command, **kwargs)
+
+            with patch.object(factory, "run_command", side_effect=fake_run_command):
+                result = attempt_source(workspace, run_dir, self.SOURCE, 30, {})
+
+        self.assertEqual(result["status"], "generation_failed")
+        self.assertEqual(result["builder_status"], "generation_failed")
+        self.assertEqual(result["builder_error"], "Selected model is at capacity")
+        self.assertEqual(result["error"], "Selected model is at capacity")
+        self.assertEqual(result["failure_stage"], "builder")
+        self.assertEqual(result["generation_warning"], "builder exited with status 1")
+        self.assertFalse((workspace / "scratch.html").exists())
+
     def test_untracked_scratch_artifact_is_cleaned_before_validation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1132,6 +1222,42 @@ class PullRequestScopeTests(unittest.TestCase):
             result = validate_directory(workspace, directory)
 
         self.assertEqual(result, {"status": "passed", "kind": "crawler"})
+
+    def test_common_crawler_accepts_annotated_none_constant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            directory = Path("crawlers/common/example_com")
+            main_path = workspace / directory / "main.py"
+            main_path.parent.mkdir(parents=True)
+            main_path.write_text(
+                "COUNTRY_CODE: str | None = None\n"
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n"
+                "def main():\n"
+                "    ExampleCrawler().run()\n",
+                encoding="utf-8",
+            )
+
+            result = validate_directory(workspace, directory)
+
+        self.assertEqual(result, {"status": "passed", "kind": "crawler"})
+
+    def test_unresolved_country_constant_is_rejected_by_pr_validator(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            directory = Path("crawlers/cz/example_cz")
+            main_path = workspace / directory / "main.py"
+            main_path.parent.mkdir(parents=True)
+            main_path.write_text(
+                "config = CrawlerConfig(country_code=COUNTRY_CODE)\n"
+                "def main():\n"
+                "    ExampleCrawler().run()\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                PullRequestValidationError, "literal ISO code or None"
+            ):
+                validate_directory(workspace, directory)
 
     def test_main_may_run_a_named_crawler_instance(self):
         with tempfile.TemporaryDirectory() as temporary:
