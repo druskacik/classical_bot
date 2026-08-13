@@ -43,6 +43,7 @@ ALLOWED_REASON_CODES = {
     "access_blocked",
     "no_parseable_source",
     "implementation_failed",
+    "wrong_source",
 }
 logger = logging.getLogger(__name__)
 ALLOWED_CHILD_ENV = {
@@ -153,6 +154,16 @@ def parse_blocked_metadata(path: Path) -> dict:
     if not required.issubset(metadata):
         raise ValueError("BLOCKED.md metadata is incomplete")
     return metadata
+
+
+def blocked_registry_state(path: Path) -> tuple[str, datetime | None]:
+    metadata = parse_blocked_metadata(path)
+    if metadata["reason_code"] == "wrong_source":
+        return "needs_attention", None
+    retry_after = metadata.get("retry_after")
+    if retry_after:
+        return "blocked", datetime.fromisoformat(retry_after).replace(tzinfo=UTC)
+    return "blocked", datetime.now(UTC) + timedelta(days=30)
 
 
 def generated_geography(crawler_path: Path) -> tuple[str, str | None]:
@@ -358,7 +369,11 @@ def normalize_blocked_metadata(
         "country_code": country_code.upper() if country_code else None,
         "reason_code": reason_code,
         "attempted_at": attempted.isoformat(),
-        "retry_after": (attempted + timedelta(days=30)).isoformat(),
+        "retry_after": (
+            None
+            if reason_code == "wrong_source"
+            else (attempted + timedelta(days=30)).isoformat()
+        ),
     }
     block = (
         "<!-- crawler-factory-metadata\n"
@@ -718,6 +733,9 @@ def attempt_source(
         blocked = (output_path / "BLOCKED.md").exists()
         if blocked:
             result["status"] = "blocked"
+            result["blocked_reason_code"] = parse_blocked_metadata(
+                output_path / "BLOCKED.md"
+            )["reason_code"]
             result["validation_status"] = "not_applicable"
         else:
             stage = "live_validation"
@@ -856,8 +874,8 @@ def reconcile_pull_requests(registry: CrawlerRegistry, workspace: Path) -> dict[
 
 def pr_body(results: list[dict], model: str, run_id: str) -> str:
     rows = [
-        "| Source | URL | Result | Validation | Warning | Failure | Directory |",
-        "|---|---|---|---|---|---|---|",
+        "| Source | URL | Result | Blocked reason | Validation | Warning | Failure | Directory |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for result in results:
         validation = result.get("validation_status") or "not run"
@@ -869,7 +887,8 @@ def pr_body(results: list[dict], model: str, run_id: str) -> str:
         warning = str(result.get("generation_warning") or "none").replace("|", "\\|").replace("\n", " ")[:500]
         failure = str(result.get("error") or "none").replace("|", "\\|").replace("\n", " ")[:500]
         rows.append(
-            f"| {result['source_id']} | {result['url']} | {result['status']} | {validation} | "
+            f"| {result['source_id']} | {result['url']} | {result['status']} | "
+            f"{result.get('blocked_reason_code') or 'none'} | {validation} | "
             f"{warning} | {failure} | "
             f"`{result['crawler_directory']}` |"
         )

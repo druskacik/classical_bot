@@ -15,6 +15,7 @@ import automation.run_crawler_factory as factory
 from automation.crawler_registry import normalize_source_url, normalized_crawler_path
 from automation.run_crawler_factory import (
     attempt_source,
+    blocked_registry_state,
     cleanup_untracked_scope_artifacts,
     crawler_directory,
     generated_geography,
@@ -146,6 +147,81 @@ class BlockedMetadataTests(unittest.TestCase):
         self.assertEqual(metadata["geographic_scope"], "country")
         self.assertEqual(metadata["attempted_at"], "2026-07-25")
         self.assertEqual(metadata["retry_after"], "2026-08-24")
+
+    def test_wrong_source_is_normalized_as_non_retryable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            url = "https://unrelated.example/"
+            directory = Path("crawlers/cz/unrelated_example")
+            path = workspace / directory / "BLOCKED.md"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "<!-- crawler-factory-metadata\n"
+                '{"url":"https://old.example","country_code":"CZ",'
+                '"reason_code":"wrong_source","attempted_at":"2020-01-01",'
+                '"retry_after":"2020-02-01"}\n'
+                "-->\n\nThe domain belongs to an unrelated business.\n",
+                encoding="utf-8",
+            )
+
+            normalize_blocked_metadata(
+                workspace,
+                url,
+                "country",
+                "CZ",
+                directory,
+                date(2026, 8, 14),
+            )
+            metadata = parse_blocked_metadata(path)
+
+        self.assertEqual(metadata["reason_code"], "wrong_source")
+        self.assertIsNone(metadata["retry_after"])
+
+    def test_wrong_source_registry_state_needs_attention(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "BLOCKED.md"
+            path.write_text(
+                "<!-- crawler-factory-metadata\n"
+                '{"url":"https://example.cz/","country_code":"CZ",'
+                '"reason_code":"wrong_source","attempted_at":"2026-08-14",'
+                '"retry_after":null}\n'
+                "-->\n",
+                encoding="utf-8",
+            )
+
+            status, retry_after = blocked_registry_state(path)
+
+        self.assertEqual(status, "needs_attention")
+        self.assertIsNone(retry_after)
+
+    def test_unknown_reason_is_normalized_to_retryable_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            url = "https://example.cz/"
+            directory = crawler_directory(url)
+            path = workspace / directory / "BLOCKED.md"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "<!-- crawler-factory-metadata\n"
+                '{"url":"https://example.cz/","country_code":"CZ",'
+                '"reason_code":"invented_reason","attempted_at":"2020-01-01",'
+                '"retry_after":null}\n'
+                "-->\n",
+                encoding="utf-8",
+            )
+
+            normalize_blocked_metadata(
+                workspace,
+                url,
+                "country",
+                "CZ",
+                directory,
+                date(2026, 8, 14),
+            )
+            metadata = parse_blocked_metadata(path)
+
+        self.assertEqual(metadata["reason_code"], "implementation_failed")
+        self.assertEqual(metadata["retry_after"], "2026-09-13")
 
 
 class GeneratedGeographyTests(unittest.TestCase):

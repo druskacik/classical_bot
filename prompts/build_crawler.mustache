@@ -151,7 +151,10 @@ HTML options, create `{{ crawler_directory }}/BLOCKED.md` but do not create
 Also use `BLOCKED.md` when the source exposes no scrapeable concerts, including
 in its available archives. Start `BLOCKED.md` with exactly this metadata block,
 using one of `no_current_events`, `access_blocked`, `no_parseable_source`, or
-`implementation_failed` as the reason code. The outer worker will normalize
+`implementation_failed` as the reason code. Use `wrong_source` instead when the
+supplied URL resolves to an unrelated organization or a domain that has been
+repurposed; do not use it for transient redirects, access failures, empty
+calendars, or unparseable concert sources. The outer worker will normalize
 the URL, country, attempt date, and retry date before publication:
 
 <!-- crawler-factory-metadata

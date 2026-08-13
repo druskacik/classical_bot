@@ -1,5 +1,5 @@
 <!-- crawler-factory-metadata
-{"url":"https://www.jhf.cz/","country_code":"CZ","reason_code":"no_current_events","attempted_at":"2026-08-02","retry_after":"2026-09-01"}
+{"url":"https://www.jhf.cz/","country_code":"CZ","reason_code":"wrong_source","attempted_at":"2026-08-02","retry_after":null}
 -->
 
 # No scrapeable concerts
