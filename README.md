@@ -8,9 +8,9 @@ The repository deploys two independent CapRover services:
 
 - `classical-bot` is the normal concert pipeline. It is built from the default
   `Dockerfile`, applies database migrations, and starts `python main.py`. The
-  app supervises the daily crawler scheduler and two independent Codex workers:
-  continuous programme extraction and, when enabled, source-by-source
-  potential-event classification. Scraping does not wait for either analyzer.
+  app supervises a continuous crawler worker and two independent Codex workers:
+  programme extraction and, when enabled, source-by-source potential-event
+  classification. Five crawler subprocesses run concurrently by default.
   Its persistent runtime state is stored under
   `/var/lib/classical-bot`.
 - `classical-crawler-factory` creates and validates crawler changes with Codex.
@@ -61,8 +61,8 @@ seed, mount one credential directory into multiple running services, print
 `automation/README.md` for the factory-specific authentication procedure.
 
 If a Codex request reports revoked or missing authentication, the affected
-Codex analyzer stops immediately without consuming attempts. The daily crawler
-scheduler continues. Both analyzers share the same persistent authentication
+Codex analyzer stops immediately without consuming attempts. The continuous
+crawler worker continues. Both analyzers share the same persistent authentication
 pause, which survives restarts
 at `/var/lib/classical-bot/codex-auth-required.json` and emits
 `codex_auth_pause_active` once per minute for alerting.
@@ -86,9 +86,9 @@ python -m automation.codex_auth resume
 The in-app programme analyzer defaults to batches of 100 concerts with
 concurrency 4. It immediately continues after a full batch and waits five
 minutes after draining the eligible queue. Fatal batches back off for fifteen
-minutes; stalled batch processes are terminated without stopping the daily
-scraper scheduler. Deployments normally wait for the active analyzer batch to
-finish, with a one-hour maximum drain period.
+minutes; stalled batch processes are terminated without stopping crawlers.
+Deployments wait for active crawler and analyzer batches to finish, with a
+one-hour maximum drain period.
 
 Potential-event classification is disabled by default until its migration and
 credentials are deployed. Set `POTENTIAL_EVENT_CLASSIFIER_ENABLED=true` to run
@@ -147,7 +147,9 @@ DB_PORT=5432
 HTTP_PROXY=
 HTTPS_PROXY=
 PYTHONUNBUFFERED=1
-RUN_JOBS_ON_STARTUP=false
+CRAWLER_CONCURRENCY=5
+CRAWLER_TIMEOUT_SECONDS=1800
+CRAWLER_HISTORY_RETENTION_DAYS=90
 POTENTIAL_EVENT_CLASSIFIER_ENABLED=false
 POTENTIAL_EVENT_CLASSIFIER_PROMOTION_ENABLED=false
 ```

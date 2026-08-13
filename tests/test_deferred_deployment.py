@@ -19,7 +19,6 @@ class DeferredDeploymentTests(unittest.TestCase):
             "repository": "https://github.com/example/repository.git",
             "deploy_webhook": "https://captain.test/hook",
             "state_path": root / "deployment-state.json",
-            "request_path": root / "update-request.json",
             "retry_interval_seconds": 300,
             "drain_timeout_seconds": 3600,
         }
@@ -30,48 +29,42 @@ class DeferredDeploymentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = self.config(root)
-            config.request_path.write_text("{}", encoding="utf-8")
             coordinator = deferred.DeferredDeploymentCoordinator(config)
             with (
                 patch.dict(os.environ, {"CAPROVER_GIT_COMMIT_SHA": OLD_SHA}, clear=True),
                 patch.object(caprover, "remote_commit", return_value=NEW_SHA),
                 patch.object(caprover, "request_deployment") as deploy,
             ):
-                coordinator.check_requested_update()
+                coordinator.check_for_update()
 
             self.assertTrue(coordinator.pending_event.is_set())
             self.assertEqual(coordinator.latest_commit, NEW_SHA)
-            self.assertFalse(config.request_path.exists())
             deploy.assert_not_called()
 
     def test_matching_commit_consumes_request_without_draining(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = self.config(root)
-            config.request_path.write_text("{}", encoding="utf-8")
             coordinator = deferred.DeferredDeploymentCoordinator(config)
             with (
                 patch.dict(os.environ, {"CAPROVER_GIT_COMMIT_SHA": OLD_SHA}, clear=True),
                 patch.object(caprover, "remote_commit", return_value=OLD_SHA),
             ):
-                coordinator.check_requested_update()
+                coordinator.check_for_update()
 
             self.assertFalse(coordinator.pending_event.is_set())
-            self.assertFalse(config.request_path.exists())
 
     def test_failed_check_leaves_request_for_retry(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = self.config(root)
-            config.request_path.write_text("{}", encoding="utf-8")
             coordinator = deferred.DeferredDeploymentCoordinator(config)
             with (
                 patch.dict(os.environ, {"CAPROVER_GIT_COMMIT_SHA": OLD_SHA}, clear=True),
                 patch.object(caprover, "remote_commit", side_effect=RuntimeError("offline")),
             ):
-                coordinator.check_requested_update()
+                coordinator.check_for_update()
 
-            self.assertTrue(config.request_path.exists())
             self.assertFalse(coordinator.pending_event.is_set())
 
     def test_drain_deadline_stops_active_worker(self):

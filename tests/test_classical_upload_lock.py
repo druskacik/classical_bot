@@ -21,14 +21,14 @@ class ClassicalUploadLockTests(unittest.TestCase):
         self.assertIn("pg_advisory_xact_lock", query)
         self.assertEqual(params, (classical.CONCERT_INSERT_ADVISORY_LOCK,))
 
-    def test_potential_upload_does_not_take_classical_insert_lock(self):
+    def test_potential_upload_uses_its_own_transaction_lock(self):
         connection, cursor = self.connection()
         with patch.object(classical.psycopg2, "connect", return_value=connection):
             classical.upload_potential_concerts([])
 
-        self.assertFalse(
-            any("pg_advisory_xact_lock" in call.args[0] for call in cursor.execute.call_args_list)
-        )
+        query, params = cursor.execute.call_args_list[0].args
+        self.assertIn("pg_advisory_xact_lock", query)
+        self.assertEqual(params, (classical.INSERT_ADVISORY_LOCKS["potential_event"],))
 
 
 if __name__ == "__main__":

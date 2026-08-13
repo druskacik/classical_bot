@@ -2,21 +2,11 @@
 
 The shared `CapRoverUpdater` compares the deployed image SHA with `master`,
 invokes a private Captain Webhook for newer commits, persists successful
-requests, and keeps failed checks retryable. The crawler factory and normal
-scraper runner apply their own scheduling guards around this shared mechanism.
-
-After the daily crawlers have returned, the scheduler writes a persistent
-update-check request. The parent process checks
-`master`; failed checks remain retryable every five minutes. A conclusive
-no-update result consumes the request and disables checks until the next daily
-pipeline finishes.
-
-The continuous programme analyzer and optional potential-event classifier are
-part of the same `classical-bot` app and do not perform their own update checks.
-When a newer commit is found, the parent lets both current Codex runs finish and
-prevents new work from starting. It invokes the deployment webhook only after
-both workers are drained. If either does not finish within one hour, supervised
-shutdown safely interrupts it before deployment.
+requests, and keeps failed checks retryable. The normal service checks every
+five minutes and before each crawler or analyzer batch. When a newer commit is
+found, all workers stop claiming work and finish their current batches. The
+webhook runs after all three workers drain; after one hour, supervised shutdown
+interrupts remaining child processes.
 
 ## CapRover configuration
 
@@ -39,16 +29,29 @@ Optional settings:
 | --- | --- | --- |
 | `SCRAPER_REPOSITORY` | `https://github.com/druskacik/classical_bot.git` | Repository queried for `master` |
 | `SCRAPER_DEPLOY_STATE_PATH` | `/var/lib/classical-bot/deployment-state.json` | Persistent updater state |
-| `SCRAPER_UPDATE_REQUEST_PATH` | `/var/lib/classical-bot/update-check-request.json` | Daily scheduler-to-parent update signal |
 | `SCRAPER_UPDATE_RETRY_SECONDS` | `300` | Retry interval for failed checks and webhook requests |
 
 If the webhook or deployed commit SHA is unavailable, scraping continues and
 automatic deployment is disabled with a log message.
 
+## Continuous crawler worker
+
+Crawler entrypoints are discovered from `crawlers/*/*/main.py`. PostgreSQL
+orders them by oldest attempt, records claims before launch, and retains attempt
+history. Failed and timed-out crawlers move to the back of the queue.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CRAWLER_CONCURRENCY` | `5` | Concurrent crawler subprocesses |
+| `CRAWLER_TIMEOUT_SECONDS` | `1800` | Hard deadline for one crawler |
+| `CRAWLER_TERMINATE_GRACE_SECONDS` | `30` | SIGTERM grace before SIGKILL |
+| `CRAWLER_LEASE_SECONDS` | timeout + 300 | Database claim lifetime |
+| `CRAWLER_HISTORY_RETENTION_DAYS` | `90` | Completed attempt retention |
+
 ## Continuous programme analyzer
 
-The default `classical-bot` Docker image supervises both the daily scraper
-scheduler and the continuous programme analyzer. Configure the production
+The default `classical-bot` Docker image supervises the crawler worker and the
+continuous programme analyzer. Configure the production
 database and trusted Codex authentication on that app without placing
 credentials in the repository or image. Database migrations run once before
 the combined runtime starts.

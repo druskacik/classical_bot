@@ -9,9 +9,6 @@ from time import monotonic
 from typing import Iterable
 
 from deployment.caprover_updater import CapRoverUpdater, CapRoverUpdaterConfig
-from deployment.scraper_updater import DEFAULT_REQUEST_PATH
-
-
 DEFAULT_REPOSITORY = "https://github.com/druskacik/classical_bot.git"
 DEFAULT_STATE_PATH = Path("/var/lib/classical-bot/deployment-state.json")
 logger = logging.getLogger(__name__)
@@ -48,7 +45,6 @@ class DeferredDeploymentConfig:
     repository: str
     deploy_webhook: str | None
     state_path: Path
-    request_path: Path
     retry_interval_seconds: int
     drain_timeout_seconds: int
 
@@ -59,9 +55,6 @@ class DeferredDeploymentConfig:
             deploy_webhook=os.getenv("SCRAPER_DEPLOY_WEBHOOK") or None,
             state_path=Path(
                 os.getenv("SCRAPER_DEPLOY_STATE_PATH", str(DEFAULT_STATE_PATH))
-            ),
-            request_path=Path(
-                os.getenv("SCRAPER_UPDATE_REQUEST_PATH", str(DEFAULT_REQUEST_PATH))
             ),
             retry_interval_seconds=positive_integer(
                 os.getenv("SCRAPER_UPDATE_RETRY_SECONDS", "300"),
@@ -91,8 +84,8 @@ class DeferredDeploymentCoordinator:
             log,
         )
 
-    def check_requested_update(self) -> None:
-        if self.pending_event.is_set() or not self.config.request_path.exists():
+    def check_for_update(self) -> None:
+        if self.pending_event.is_set():
             return
         if not self._check_lock.acquire(blocking=False):
             return
@@ -102,13 +95,10 @@ class DeferredDeploymentCoordinator:
                 self.latest_commit = update
                 self.pending_since = monotonic()
                 self.pending_event.set()
-                self.config.request_path.unlink(missing_ok=True)
                 log(
                     "Update found; draining Codex analysis before deploying "
                     f"{update[:12]}"
                 )
-            elif self.updater.last_check_conclusive:
-                self.config.request_path.unlink(missing_ok=True)
         finally:
             self._check_lock.release()
 
@@ -127,7 +117,7 @@ class DeferredDeploymentCoordinator:
         while not shutdown_event.is_set():
             now = monotonic()
             if not self.pending_event.is_set() and now >= next_check_at:
-                self.check_requested_update()
+                self.check_for_update()
                 next_check_at = monotonic() + self.config.retry_interval_seconds
             if (
                 self.pending_event.is_set()
