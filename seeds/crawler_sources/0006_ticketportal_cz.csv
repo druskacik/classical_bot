@@ -1,0 +1,2 @@
+url,country_code,scope_hint,canonical_url,crawler_path,priority,notes
+https://www.ticketportal.cz/,CZ,country,,crawlers/cz/ticketportal_cz,0,Country-wide mixed ticketing platform; expected_upload=potential; discovery combines Ticketportal classical opera and ballet categories with conservative title fallback; evidence=https://www.ticketportal.cz/divadlo/opera
