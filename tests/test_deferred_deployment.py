@@ -25,6 +25,19 @@ class DeferredDeploymentTests(unittest.TestCase):
         values.update(overrides)
         return deferred.DeferredDeploymentConfig(**values)
 
+    def test_internal_state_path_and_retry_interval_are_not_overridden(self):
+        with patch.dict(
+            os.environ,
+            {
+                "SCRAPER_DEPLOY_STATE_PATH": "/tmp/override.json",
+                "SCRAPER_UPDATE_RETRY_SECONDS": "1",
+            },
+            clear=True,
+        ):
+            config = deferred.DeferredDeploymentConfig.from_environment()
+        self.assertEqual(config.state_path, deferred.DEFAULT_STATE_PATH)
+        self.assertEqual(config.retry_interval_seconds, deferred.UPDATE_RETRY_SECONDS)
+
     def test_newer_commit_starts_drain_without_requesting_deployment(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

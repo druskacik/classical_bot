@@ -23,7 +23,14 @@ class ProgrammeAnalyzerWorkerTests(unittest.TestCase):
         return worker_module.WorkerConfig(**values)
 
     def test_environment_defaults(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(
+            os.environ,
+            {
+                "CONCERT_PROGRAM_IDLE_INTERVAL_SECONDS": "1",
+                "CONCERT_PROGRAM_FAILURE_BACKOFF_SECONDS": "1",
+            },
+            clear=True,
+        ):
             config = worker_module.WorkerConfig.from_environment()
         self.assertEqual(config.batch_size, 100)
         self.assertEqual(config.concurrency, 4)

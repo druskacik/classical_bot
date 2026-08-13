@@ -11,6 +11,7 @@ from typing import Iterable
 from deployment.caprover_updater import CapRoverUpdater, CapRoverUpdaterConfig
 DEFAULT_REPOSITORY = "https://github.com/druskacik/classical_bot.git"
 DEFAULT_STATE_PATH = Path("/var/lib/classical-bot/deployment-state.json")
+UPDATE_RETRY_SECONDS = 300
 logger = logging.getLogger(__name__)
 
 
@@ -53,13 +54,8 @@ class DeferredDeploymentConfig:
         return cls(
             repository=os.getenv("SCRAPER_REPOSITORY", DEFAULT_REPOSITORY),
             deploy_webhook=os.getenv("SCRAPER_DEPLOY_WEBHOOK") or None,
-            state_path=Path(
-                os.getenv("SCRAPER_DEPLOY_STATE_PATH", str(DEFAULT_STATE_PATH))
-            ),
-            retry_interval_seconds=positive_integer(
-                os.getenv("SCRAPER_UPDATE_RETRY_SECONDS", "300"),
-                "SCRAPER_UPDATE_RETRY_SECONDS",
-            ),
+            state_path=DEFAULT_STATE_PATH,
+            retry_interval_seconds=UPDATE_RETRY_SECONDS,
             drain_timeout_seconds=positive_integer(
                 os.getenv("CONCERT_PROGRAM_DEPLOY_DRAIN_TIMEOUT_SECONDS", "3600"),
                 "CONCERT_PROGRAM_DEPLOY_DRAIN_TIMEOUT_SECONDS",

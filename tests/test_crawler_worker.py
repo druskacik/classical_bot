@@ -27,18 +27,21 @@ class CrawlerWorkerTests(unittest.TestCase):
         self.assertEqual(config.timeout_seconds, 1800)
         self.assertEqual(config.history_retention_days, 90)
 
-    def test_lease_must_cover_timeout_and_termination_grace(self):
+    def test_internal_timing_policy_is_not_overridden_by_environment(self):
         with patch.dict(
             os.environ,
             {
                 "CRAWLER_TIMEOUT_SECONDS": "100",
-                "CRAWLER_TERMINATE_GRACE_SECONDS": "30",
-                "CRAWLER_LEASE_SECONDS": "120",
+                "CRAWLER_TERMINATE_GRACE_SECONDS": "1",
+                "CRAWLER_LEASE_SECONDS": "1",
+                "CRAWLER_HISTORY_RETENTION_DAYS": "1",
             },
             clear=True,
         ):
-            with self.assertRaisesRegex(ValueError, "must cover"):
-                worker_module.CrawlerWorkerConfig.from_environment()
+            config = worker_module.CrawlerWorkerConfig.from_environment()
+        self.assertEqual(config.terminate_grace_seconds, 30)
+        self.assertEqual(config.lease_seconds, 400)
+        self.assertEqual(config.history_retention_days, 90)
 
     def test_discovers_repository_relative_paths(self):
         root = Path("/repo")

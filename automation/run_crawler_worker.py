@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 REPOSITORY_ROOT = Path(__file__).parents[1]
 MINIMUM_CRAWL_INTERVAL_SECONDS = 86400
 IDLE_INTERVAL_SECONDS = 300
+TERMINATE_GRACE_SECONDS = 30
+LEASE_GRACE_SECONDS = 300
+HISTORY_RETENTION_DAYS = 90
 
 
 def positive_integer(value: str, name: str) -> int:
@@ -46,30 +49,14 @@ class CrawlerWorkerConfig:
             os.getenv("CRAWLER_TIMEOUT_SECONDS", "1800"),
             "CRAWLER_TIMEOUT_SECONDS",
         )
-        terminate_grace = positive_integer(
-            os.getenv("CRAWLER_TERMINATE_GRACE_SECONDS", "30"),
-            "CRAWLER_TERMINATE_GRACE_SECONDS",
-        )
-        lease = positive_integer(
-            os.getenv("CRAWLER_LEASE_SECONDS", str(timeout + 300)),
-            "CRAWLER_LEASE_SECONDS",
-        )
-        if lease < timeout + terminate_grace:
-            raise ValueError(
-                "CRAWLER_LEASE_SECONDS must cover CRAWLER_TIMEOUT_SECONDS plus "
-                "CRAWLER_TERMINATE_GRACE_SECONDS"
-            )
         return cls(
             concurrency=positive_integer(
                 os.getenv("CRAWLER_CONCURRENCY", "5"), "CRAWLER_CONCURRENCY"
             ),
             timeout_seconds=timeout,
-            terminate_grace_seconds=terminate_grace,
-            lease_seconds=lease,
-            history_retention_days=positive_integer(
-                os.getenv("CRAWLER_HISTORY_RETENTION_DAYS", "90"),
-                "CRAWLER_HISTORY_RETENTION_DAYS",
-            ),
+            terminate_grace_seconds=TERMINATE_GRACE_SECONDS,
+            lease_seconds=timeout + LEASE_GRACE_SECONDS,
+            history_retention_days=HISTORY_RETENTION_DAYS,
         )
 
 

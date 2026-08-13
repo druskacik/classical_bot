@@ -22,6 +22,8 @@ from observability import configure_logging
 
 
 logger = logging.getLogger(__name__)
+IDLE_INTERVAL_SECONDS = 300
+FAILURE_BACKOFF_SECONDS = 900
 
 
 def positive_integer(value: str, name: str) -> int:
@@ -72,14 +74,8 @@ class WorkerConfig:
                 os.getenv("CONCERT_PROGRAM_CONCURRENCY", "4"),
                 "CONCERT_PROGRAM_CONCURRENCY",
             ),
-            idle_interval_seconds=positive_integer(
-                os.getenv("CONCERT_PROGRAM_IDLE_INTERVAL_SECONDS", "300"),
-                "CONCERT_PROGRAM_IDLE_INTERVAL_SECONDS",
-            ),
-            failure_backoff_seconds=positive_integer(
-                os.getenv("CONCERT_PROGRAM_FAILURE_BACKOFF_SECONDS", "900"),
-                "CONCERT_PROGRAM_FAILURE_BACKOFF_SECONDS",
-            ),
+            idle_interval_seconds=IDLE_INTERVAL_SECONDS,
+            failure_backoff_seconds=FAILURE_BACKOFF_SECONDS,
             batch_timeout_seconds=positive_integer(
                 os.getenv("CONCERT_PROGRAM_BATCH_TIMEOUT_SECONDS", "72000"),
                 "CONCERT_PROGRAM_BATCH_TIMEOUT_SECONDS",

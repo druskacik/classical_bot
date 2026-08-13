@@ -28,8 +28,10 @@ Optional settings:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SCRAPER_REPOSITORY` | `https://github.com/druskacik/classical_bot.git` | Repository queried for `master` |
-| `SCRAPER_DEPLOY_STATE_PATH` | `/var/lib/classical-bot/deployment-state.json` | Persistent updater state |
-| `SCRAPER_UPDATE_RETRY_SECONDS` | `300` | Retry interval for failed checks and webhook requests |
+
+Deployment state is always stored at
+`/var/lib/classical-bot/deployment-state.json`; update checks and failed webhook
+requests retry every five minutes.
 
 If the webhook or deployed commit SHA is unavailable, scraping continues and
 automatic deployment is disabled with a log message.
@@ -47,9 +49,9 @@ five minutes while remaining responsive to deployment draining.
 | --- | --- | --- |
 | `CRAWLER_CONCURRENCY` | `5` | Concurrent crawler subprocesses |
 | `CRAWLER_TIMEOUT_SECONDS` | `1800` | Hard deadline for one crawler |
-| `CRAWLER_TERMINATE_GRACE_SECONDS` | `30` | SIGTERM grace before SIGKILL |
-| `CRAWLER_LEASE_SECONDS` | timeout + 300 | Database claim lifetime |
-| `CRAWLER_HISTORY_RETENTION_DAYS` | `90` | Completed attempt retention |
+
+Crawler termination grace is fixed at 30 seconds, leases are always the crawler
+timeout plus five minutes, and completed attempt history is retained for 90 days.
 
 ## Continuous programme analyzer
 
@@ -63,11 +65,12 @@ the combined runtime starts.
 | --- | --- | --- |
 | `CONCERT_PROGRAM_BATCH_SIZE` | `100` | Maximum concerts selected per child batch |
 | `CONCERT_PROGRAM_CONCURRENCY` | `4` | Concurrent Codex group turns |
-| `CONCERT_PROGRAM_IDLE_INTERVAL_SECONDS` | `300` | Wait after draining the queue |
-| `CONCERT_PROGRAM_FAILURE_BACKOFF_SECONDS` | `900` | Wait after a fatal batch |
 | `CONCERT_PROGRAM_STALL_TIMEOUT_SECONDS` | `2400` | Kill a child with no group progress |
 | `CONCERT_PROGRAM_BATCH_TIMEOUT_SECONDS` | `72000` | Hard child-batch deadline |
 | `CONCERT_PROGRAM_DEPLOY_DRAIN_TIMEOUT_SECONDS` | `3600` | Maximum wait for a batch boundary before deployment |
+
+An empty programme queue is rechecked after five minutes; fatal batches back
+off for fifteen minutes.
 
 ## Potential-event classifier
 
@@ -79,9 +82,10 @@ started explicitly with the analyzer CLI.
 | --- | --- | --- |
 | `POTENTIAL_EVENT_CLASSIFIER_ENABLED` | `false` | Enable the continuous source classifier |
 | `POTENTIAL_EVENT_CLASSIFIER_PROMOTION_ENABLED` | `false` | Promote validated classical decisions; false never inserts new concerts, but explicit negative decisions can quarantine exact existing matches |
-| `POTENTIAL_EVENT_CLASSIFIER_IDLE_SECONDS` | `300` | Wait after draining the eligible queue |
-| `POTENTIAL_EVENT_CLASSIFIER_FAILURE_BACKOFF_SECONDS` | `900` | Wait after a fatal source run |
 | `POTENTIAL_EVENT_CLASSIFIER_TURN_TIMEOUT_SECONDS` | `1800` | Codex deadline per bounded source page; process guards are derived from it |
+
+An empty classification queue is rechecked after five minutes; fatal source
+runs back off for fifteen minutes.
 
 The programme analyzer records an independent occurrence-level inclusion
 assessment. Explicit `nonclassical` and `not_event` results quarantine the row,
