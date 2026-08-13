@@ -18,6 +18,19 @@ class PotentialEventClassifierWorkerTests(unittest.TestCase):
         values.update(overrides)
         return worker_module.ClassifierWorkerConfig(**values)
 
+    def test_internal_wait_policy_is_not_overridden_by_environment(self):
+        with patch.dict(
+            os.environ,
+            {
+                "POTENTIAL_EVENT_CLASSIFIER_IDLE_SECONDS": "1",
+                "POTENTIAL_EVENT_CLASSIFIER_FAILURE_BACKOFF_SECONDS": "1",
+            },
+            clear=True,
+        ):
+            config = worker_module.ClassifierWorkerConfig.from_environment()
+        self.assertEqual(config.idle_interval_seconds, 300)
+        self.assertEqual(config.failure_backoff_seconds, 900)
+
     def test_process_guards_are_derived_from_turn_timeout(self):
         worker = worker_module.PotentialEventClassifierWorker(self.config())
 

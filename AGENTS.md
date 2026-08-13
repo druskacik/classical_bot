@@ -5,7 +5,7 @@ Data scraping pipeline for classical music events. Crawlers scrape concert listi
 ## Commands
 
 ```bash
-# Run all crawlers + analyzers (scheduled loop)
+# Run continuous crawlers + analyzers
 uv run python main.py
 
 # Run a single crawler
@@ -26,7 +26,7 @@ testing.
 
 ### Production services
 
-- **`classical-bot`** — Built from `Dockerfile`; starts `python main.py` and runs the scheduled crawlers and analyzers.
+- **`classical-bot`** — Built from `Dockerfile`; starts `python main.py` and runs continuous crawler and analyzer workers.
 - **`classical-crawler-factory`** — Deployed through `captain-definition-crawler-factory`, which selects `Dockerfile.crawler-factory`; starts `python -m automation.run_crawler_factory_service` and creates, validates, and publishes crawler changes. It does not run the normal concert pipeline.
 
 ### Pipeline flow

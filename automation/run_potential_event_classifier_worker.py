@@ -22,6 +22,8 @@ from observability import configure_logging
 
 
 logger = logging.getLogger(__name__)
+IDLE_INTERVAL_SECONDS = 300
+FAILURE_BACKOFF_SECONDS = 900
 
 
 def positive_integer(value: str, name: str) -> int:
@@ -70,14 +72,8 @@ class ClassifierWorkerConfig:
     @classmethod
     def from_environment(cls) -> "ClassifierWorkerConfig":
         return cls(
-            idle_interval_seconds=positive_integer(
-                os.getenv("POTENTIAL_EVENT_CLASSIFIER_IDLE_SECONDS", "300"),
-                "POTENTIAL_EVENT_CLASSIFIER_IDLE_SECONDS",
-            ),
-            failure_backoff_seconds=positive_integer(
-                os.getenv("POTENTIAL_EVENT_CLASSIFIER_FAILURE_BACKOFF_SECONDS", "900"),
-                "POTENTIAL_EVENT_CLASSIFIER_FAILURE_BACKOFF_SECONDS",
-            ),
+            idle_interval_seconds=IDLE_INTERVAL_SECONDS,
+            failure_backoff_seconds=FAILURE_BACKOFF_SECONDS,
             turn_timeout_seconds=positive_integer(
                 os.getenv("POTENTIAL_EVENT_CLASSIFIER_TURN_TIMEOUT_SECONDS", "1800"),
                 "POTENTIAL_EVENT_CLASSIFIER_TURN_TIMEOUT_SECONDS",

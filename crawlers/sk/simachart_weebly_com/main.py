@@ -10,29 +10,45 @@ from observability import log_message
 from ...extractors import clean_string, extract_city, extract_time
 
 URL = 'https://simachart.weebly.com/bude.html'
+DATE_PATTERN = re.compile(r'(?<!\d)(\d{1,2})\.\s*(\d{1,2})\.\s*\.?\s*(\d{4})(?!\d)')
+MAX_SUMMARY_LINE_LENGTH = 160
+
 
 def extract_concert_info(paragraph):
     lines = [clean_string(line) for line in paragraph.get_text('\n', strip=True).splitlines()]
     lines = [line for line in lines if line]
-    date_line_index = next((i for i, line in enumerate(lines) if re.search(r'\d{1,2}\.\s*\d{1,2}\.\s*\.?\s*\d{4}', line)), None)
+    date_line_index = next((i for i, line in enumerate(lines) if DATE_PATTERN.search(line)), None)
     if date_line_index is None:
         return None
 
-    date_match = re.search(r'(\d{1,2})\.\s*(\d{1,2})\.\s*\.?\s*(\d{4})', lines[date_line_index])
+    # Simachart has no event markup. Its reliable structure is a compact summary:
+    # date/time, venue, address, then title. The page also repeats the date in a
+    # long editorial paragraph, which must not become a duplicate malformed event.
+    summary_lines = lines[date_line_index:date_line_index + 4]
+    if (
+        len(summary_lines) < 4
+        or extract_time(summary_lines[0]) is None
+        or any(len(line) > MAX_SUMMARY_LINE_LENGTH for line in summary_lines)
+    ):
+        return None
+
+    date_match = DATE_PATTERN.search(lines[date_line_index])
     day, month, year = [int(part) for part in date_match.groups()]
     date = f'{year}-{month:02d}-{day:02d}'
     if date_cls.fromisoformat(date) < date_cls.today():
         return None
 
-    time = extract_time(lines[date_line_index])
-    venue = lines[date_line_index + 1] if len(lines) > date_line_index + 1 else None
-    address = lines[date_line_index + 2] if len(lines) > date_line_index + 2 else ''
-    city = extract_city(address) or 'Ružomberok'
-    title = lines[date_line_index + 3] if len(lines) > date_line_index + 3 else lines[0]
+    time = extract_time(summary_lines[0])
+    venue = summary_lines[1]
+    address = summary_lines[2]
+    city = extract_city(address)
+    if city is None:
+        return None
+    title = summary_lines[3]
     
     return {
 		'title': title,
-		'date': format_date(date),
+		'date': date,
 		'time_from': time,
 		'venue': venue,
 		'city': city,
@@ -40,7 +56,7 @@ def extract_concert_info(paragraph):
 	}
 
 def extract_concerts(soup):
-    paragraphs = soup.find_all('div', class_='paragraph', style='text-align:justify;')
+    paragraphs = soup.select('div.paragraph')
     concerts = []
     for p in paragraphs:
         try:

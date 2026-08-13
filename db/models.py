@@ -117,6 +117,54 @@ class PotentialEvent(Base):
     composers = Column(ARRAY(Text))
 
 
+class CrawlerRuntimeState(Base):
+    __tablename__ = "crawler_runtime_state"
+    __table_args__ = (
+        CheckConstraint(
+            "last_outcome IS NULL OR last_outcome IN "
+            "('running', 'succeeded', 'failed', 'timed_out', 'launch_failed', 'interrupted')",
+            name="ck_crawler_runtime_state_outcome",
+        ),
+        CheckConstraint("consecutive_failures >= 0", name="ck_crawler_runtime_state_failures"),
+        Index("ix_crawler_runtime_state_due", "last_attempt_started_at", "crawler_path"),
+        Index("ix_crawler_runtime_state_lease", "lease_expires_at"),
+    )
+
+    crawler_path = Column(Text, primary_key=True)
+    last_attempt_started_at = Column(DateTime(timezone=True))
+    last_attempt_finished_at = Column(DateTime(timezone=True))
+    last_success_at = Column(DateTime(timezone=True))
+    last_outcome = Column(String)
+    consecutive_failures = Column(Integer, nullable=False, server_default="0")
+    lease_owner = Column(Text)
+    lease_expires_at = Column(DateTime(timezone=True))
+
+
+class CrawlerRuntimeAttempt(Base):
+    __tablename__ = "crawler_runtime_attempt"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN "
+            "('running', 'succeeded', 'failed', 'timed_out', 'launch_failed', 'interrupted')",
+            name="ck_crawler_runtime_attempt_outcome",
+        ),
+        Index("ix_crawler_runtime_attempt_path_started", "crawler_path", "started_at"),
+        Index("ix_crawler_runtime_attempt_finished", "finished_at"),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    crawler_path = Column(
+        Text,
+        ForeignKey("crawler_runtime_state.crawler_path", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    worker_id = Column(Text, nullable=False)
+    outcome = Column(String, nullable=False, server_default="running")
+    return_code = Column(Integer)
+    started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    finished_at = Column(DateTime(timezone=True))
+
+
 class PotentialEventClassificationRun(Base):
     __tablename__ = "potential_event_classification_run"
     __table_args__ = (
