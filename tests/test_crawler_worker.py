@@ -86,6 +86,36 @@ class CrawlerWorkerTests(unittest.TestCase):
         killpg.assert_called_once_with(123, signal.SIGTERM)
         registry.finish.assert_called_once_with(7, "timed_out", -signal.SIGTERM)
 
+    def test_empty_eligible_queue_waits_and_uses_fixed_daily_interval(self):
+        registry = MagicMock()
+        registry.__enter__.return_value = registry
+        registry.claim.return_value = []
+        worker = worker_module.CrawlerWorker(
+            self.config(), registry_factory=lambda: registry
+        )
+
+        def stop_after_wait(seconds):
+            self.assertEqual(seconds, worker_module.IDLE_INTERVAL_SECONDS)
+            worker.stop_event.set()
+
+        with (
+            patch.object(
+                worker_module,
+                "discover_crawler_paths",
+                return_value=["crawlers/sk/example"],
+            ),
+            patch.object(worker, "wait", side_effect=stop_after_wait),
+        ):
+            worker.run()
+
+        registry.claim.assert_called_once_with(
+            ["crawlers/sk/example"],
+            limit=5,
+            worker_id=worker.worker_id,
+            lease_seconds=2100,
+            minimum_interval_seconds=86400,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

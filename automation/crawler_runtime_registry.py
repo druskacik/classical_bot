@@ -67,6 +67,7 @@ class CrawlerRuntimeRegistry:
         limit: int,
         worker_id: str,
         lease_seconds: int,
+        minimum_interval_seconds: int,
     ) -> list[dict]:
         if not crawler_paths:
             return []
@@ -85,11 +86,15 @@ class CrawlerRuntimeRegistry:
                 FROM crawler_runtime_state
                 WHERE crawler_path = ANY(%s::text[])
                   AND (lease_expires_at IS NULL OR lease_expires_at < now())
+                  AND (
+                    last_attempt_started_at IS NULL
+                    OR last_attempt_started_at <= now() - (%s * interval '1 second')
+                  )
                 ORDER BY last_attempt_started_at ASC NULLS FIRST, crawler_path
                 FOR UPDATE SKIP LOCKED
                 LIMIT %s
                 """,
-                (crawler_paths, limit),
+                (crawler_paths, minimum_interval_seconds, limit),
             )
             paths = [row["crawler_path"] for row in cursor.fetchall()]
             claimed = []

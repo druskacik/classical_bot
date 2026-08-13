@@ -18,6 +18,8 @@ from observability import configure_logging
 
 logger = logging.getLogger(__name__)
 REPOSITORY_ROOT = Path(__file__).parents[1]
+MINIMUM_CRAWL_INTERVAL_SECONDS = 86400
+IDLE_INTERVAL_SECONDS = 300
 
 
 def positive_integer(value: str, name: str) -> int:
@@ -114,6 +116,14 @@ class CrawlerWorker:
 
     def stop(self) -> None:
         self.stop_event.set()
+
+    def wait(self, seconds: int) -> None:
+        deadline = monotonic() + seconds
+        while not self.stop_event.is_set() and not self.drain_event.is_set():
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return
+            self.stop_event.wait(min(1, remaining))
 
     def _signal(self, running: RunningCrawler, signum: int) -> None:
         try:
@@ -239,9 +249,20 @@ class CrawlerWorker:
                     limit=self.config.concurrency,
                     worker_id=self.worker_id,
                     lease_seconds=self.config.lease_seconds,
+                    minimum_interval_seconds=MINIMUM_CRAWL_INTERVAL_SECONDS,
                 )
                 if not claims:
-                    raise RuntimeError("No crawler could be claimed from a non-empty queue")
+                    logger.info(
+                        "Crawler queue has no eligible entries; waiting before recheck",
+                        extra={
+                            "event": "crawler_worker_queue_idle",
+                            "component": "crawler-worker",
+                            "idle_interval_seconds": IDLE_INTERVAL_SECONDS,
+                            "minimum_crawl_interval_seconds": MINIMUM_CRAWL_INTERVAL_SECONDS,
+                        },
+                    )
+                    self.wait(IDLE_INTERVAL_SECONDS)
+                    continue
                 self._run_claims(registry, claims)
         logger.info(
             "Crawler worker stopped",

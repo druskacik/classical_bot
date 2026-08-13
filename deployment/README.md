@@ -38,7 +38,10 @@ automatic deployment is disabled with a log message.
 
 Crawler entrypoints are discovered from `crawlers/*/*/main.py`. PostgreSQL
 orders them by oldest attempt, records claims before launch, and retains attempt
-history. Failed and timed-out crawlers move to the back of the queue.
+history. A crawler is eligible only when it has never been attempted or its
+last attempt began at least 24 hours ago. This applies to failures and timeouts
+as well as successful runs. When nothing is eligible, the worker rechecks after
+five minutes while remaining responsive to deployment draining.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

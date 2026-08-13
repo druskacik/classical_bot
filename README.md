@@ -11,6 +11,7 @@ The repository deploys two independent CapRover services:
   app supervises a continuous crawler worker and two independent Codex workers:
   programme extraction and, when enabled, source-by-source potential-event
   classification. Five crawler subprocesses run concurrently by default.
+  Each crawler is attempted at most once per rolling 24-hour period.
   Its persistent runtime state is stored under
   `/var/lib/classical-bot`.
 - `classical-crawler-factory` creates and validates crawler changes with Codex.
