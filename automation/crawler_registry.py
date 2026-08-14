@@ -590,7 +590,9 @@ class CrawlerRegistry:
         self.connection.commit()
 
     def reconcile_workspace(self, workspace: Path) -> dict[str, int]:
-        counts = {"active": 0, "blocked": 0}
+        from automation.run_crawler_factory import blocked_registry_state
+
+        counts = {"active": 0, "blocked": 0, "needs_attention": 0}
         with self.cursor() as cursor:
             cursor.execute(
                 """
@@ -603,7 +605,8 @@ class CrawlerRegistry:
                     ORDER BY id DESC
                     LIMIT 1
                 ) AS latest ON true
-                WHERE source.status = 'pr_open' AND source.crawler_path IS NOT NULL
+                WHERE source.status IN ('pr_open', 'blocked')
+                  AND source.crawler_path IS NOT NULL
                 """
             )
             sources = list(cursor.fetchall())
@@ -613,10 +616,13 @@ class CrawlerRegistry:
                     status = "active"
                     retry_at = None
                 elif (directory / "BLOCKED.md").exists():
-                    status = "blocked"
+                    status, metadata_retry_at = blocked_registry_state(
+                        directory / "BLOCKED.md"
+                    )
                     retry_at = (
-                        source["retry_after"]
-                        or datetime.now(UTC) + timedelta(days=30)
+                        None
+                        if status == "needs_attention"
+                        else source["retry_after"] or metadata_retry_at
                     )
                 else:
                     continue

@@ -18,14 +18,13 @@ def expected_crawler_path(url: str, country_code: str) -> str:
     return f"crawlers/{country_code.lower()}/{crawler_folder_name(url)}"
 
 
-def blocked_retry_after(path: Path) -> datetime:
-    from automation.run_crawler_factory import parse_blocked_metadata
+def blocked_source_state(path: Path) -> tuple[str, datetime | None]:
+    from automation.run_crawler_factory import blocked_registry_state
 
     try:
-        value = parse_blocked_metadata(path)["retry_after"]
-        return datetime.fromisoformat(value).replace(tzinfo=UTC)
+        return blocked_registry_state(path)
     except Exception:
-        return datetime.now(UTC) + timedelta(days=30)
+        return "blocked", datetime.now(UTC) + timedelta(days=30)
 
 
 def import_seed(path: Path, repository_root: Path, registry: CrawlerRegistry) -> dict:
@@ -50,7 +49,7 @@ def import_seed(path: Path, repository_root: Path, registry: CrawlerRegistry) ->
         if not REQUIRED_COLUMNS.issubset(reader.fieldnames or []):
             raise ValueError(f"Seed must contain columns: {sorted(REQUIRED_COLUMNS)}")
         rows = list(reader)
-    counts = {"active": 0, "blocked": 0, "pending": 0}
+    counts = {"active": 0, "blocked": 0, "needs_attention": 0, "pending": 0}
     try:
         for row in rows:
             url = row["url"].strip()
@@ -94,8 +93,9 @@ def import_seed(path: Path, repository_root: Path, registry: CrawlerRegistry) ->
                 status = "active"
                 next_attempt_at = None
             elif effective_directory and (effective_directory / "BLOCKED.md").exists():
-                status = "blocked"
-                next_attempt_at = blocked_retry_after(effective_directory / "BLOCKED.md")
+                status, next_attempt_at = blocked_source_state(
+                    effective_directory / "BLOCKED.md"
+                )
             else:
                 status = "pending"
                 next_attempt_at = None

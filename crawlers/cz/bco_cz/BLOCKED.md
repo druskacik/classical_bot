@@ -1,5 +1,5 @@
 <!-- crawler-factory-metadata
-{"url":"https://www.bco.cz/","country_code":"CZ","reason_code":"no_parseable_source","attempted_at":"2026-07-29","retry_after":"2026-08-28"}
+{"url":"https://www.bco.cz/","country_code":"CZ","reason_code":"wrong_source","attempted_at":"2026-07-29","retry_after":null}
 -->
 
 # Crawler blocked
