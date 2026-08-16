@@ -43,6 +43,14 @@ class ClassicalConcert(Base):
         Index("ix_classical_concert_inclusion_date", "inclusion_status", "date", "id"),
         Index("ix_classical_concert_date_time_id", "date", "time_from", "id"),
         Index(
+            "ix_classical_concert_public_listing",
+            "date",
+            "time_from",
+            "id",
+            postgresql_include=["city_id", "country_code_resolved"],
+            postgresql_where=text("inclusion_status = 'included'"),
+        ),
+        Index(
             "ix_classical_concert_country_date_time_id",
             "country_code_resolved",
             "date",
