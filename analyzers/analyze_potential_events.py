@@ -1052,7 +1052,10 @@ async def analyze_source(
         CodexConfig(
             codex_bin=os.getenv("CODEX_BIN"),
             cwd=str(Path.cwd()),
-            config_overrides=("sandbox_workspace_write.network_access=true",),
+            config_overrides=(
+                "sandbox_workspace_write.network_access=true",
+                'web_search="live"',
+            ),
         )
     ) as codex:
         await validate_model(codex, model)
