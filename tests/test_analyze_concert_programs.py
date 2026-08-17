@@ -736,6 +736,14 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         asyncio.run(analyzer.run_agent(codex, group, "gpt-5.6-terra", timeout_seconds=30))
 
         self.assertIs(codex.thread_start.call_args.kwargs["ephemeral"], False)
+        self.assertEqual(
+            codex.thread_start.call_args.kwargs["sandbox"],
+            analyzer.Sandbox.workspace_write,
+        )
+        self.assertEqual(
+            thread.turn.call_args.kwargs["sandbox"],
+            analyzer.Sandbox.workspace_write,
+        )
 
     def test_dry_run_never_persists(self):
         coordinator_conn = MagicMock()
@@ -763,6 +771,13 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         self.assertEqual(failures, 0)
         config = codex_class.call_args.args[0]
         self.assertIsNone(config.codex_bin)
+        self.assertEqual(
+            config.config_overrides,
+            (
+                "sandbox_workspace_write.network_access=true",
+                'web_search="live"',
+            ),
+        )
         persist_result.assert_not_called()
         coordinator_conn.commit.assert_not_called()
         worker_conn.commit.assert_not_called()

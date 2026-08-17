@@ -327,6 +327,7 @@ class PotentialEventAnalyzerTests(unittest.TestCase):
             "sandbox_workspace_write.network_access=true",
             config.config_overrides,
         )
+        self.assertIn('web_search="live"', config.config_overrides)
 
 
 if __name__ == "__main__":

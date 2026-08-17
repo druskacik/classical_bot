@@ -479,7 +479,7 @@ async def run_agent(
         cwd=str(Path.cwd()),
         ephemeral=False,
         model=model,
-        sandbox=Sandbox.full_access,
+        sandbox=Sandbox.workspace_write,
     )
     prompt = render_prompt(group)
     repairs = 0
@@ -491,7 +491,7 @@ async def run_agent(
             cwd=str(Path.cwd()),
             model=model,
             output_schema=OUTPUT_SCHEMA,
-            sandbox=Sandbox.full_access,
+            sandbox=Sandbox.workspace_write,
         )
         try:
             response = await asyncio.wait_for(turn.run(), timeout=timeout_seconds)
@@ -1618,7 +1618,14 @@ async def run_concert_groups(
             heartbeat()
 
     async with AsyncCodex(
-        CodexConfig(codex_bin=os.getenv("CODEX_BIN"), cwd=str(Path.cwd()))
+        CodexConfig(
+            codex_bin=os.getenv("CODEX_BIN"),
+            cwd=str(Path.cwd()),
+            config_overrides=(
+                "sandbox_workspace_write.network_access=true",
+                'web_search="live"',
+            ),
+        )
     ) as codex:
         await validate_model(codex, model)
         tasks = [asyncio.create_task(run_group(group)) for group in groups]
