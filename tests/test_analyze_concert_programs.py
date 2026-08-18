@@ -718,7 +718,7 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         )
         conn.commit.assert_called_once()
 
-    def test_agent_threads_are_persistent(self):
+    def test_agent_threads_use_ephemeral_environment_setting(self):
         codex = MagicMock()
         codex.thread_start = AsyncMock()
         thread = codex.thread_start.return_value
@@ -733,9 +733,10 @@ class AnalyzeConcertProgramsTests(unittest.TestCase):
         group = analyzer.group_concerts([concert])[0]
         turn.run.return_value.final_response = json.dumps(no_program_group_result([concert]))
 
-        asyncio.run(analyzer.run_agent(codex, group, "gpt-5.6-terra", timeout_seconds=30))
+        with patch.dict(os.environ, {"CODEX_EPHEMERAL": "true"}):
+            asyncio.run(analyzer.run_agent(codex, group, "gpt-5.6-terra", timeout_seconds=30))
 
-        self.assertIs(codex.thread_start.call_args.kwargs["ephemeral"], False)
+        self.assertIs(codex.thread_start.call_args.kwargs["ephemeral"], True)
         self.assertEqual(
             codex.thread_start.call_args.kwargs["sandbox"],
             analyzer.Sandbox.workspace_write,

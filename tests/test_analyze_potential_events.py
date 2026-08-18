@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from datetime import date
@@ -328,6 +329,33 @@ class PotentialEventAnalyzerTests(unittest.TestCase):
             config.config_overrides,
         )
         self.assertIn('web_search="live"', config.config_overrides)
+
+    def test_codex_thread_uses_ephemeral_environment_setting(self):
+        codex = AsyncMock()
+        codex.__aenter__.return_value = codex
+        codex.thread_start.return_value = MagicMock(id="thread-1")
+        with (
+            patch.dict(os.environ, {"CODEX_EPHEMERAL": "true"}),
+            patch.object(analyzer, "AsyncCodex", return_value=codex),
+            patch.object(analyzer, "validate_model", AsyncMock()),
+        ):
+            __import__("asyncio").run(
+                analyzer.analyze_source(
+                    [],
+                    source="Example Hall",
+                    source_url="https://example.test",
+                    model="gpt-test",
+                    commit=False,
+                    conn=None,
+                    run_id=None,
+                    maximum_events=100,
+                    maximum_chars=120_000,
+                    timeout_seconds=10,
+                    heartbeat_path=None,
+                )
+            )
+
+        self.assertIs(codex.thread_start.await_args.kwargs["ephemeral"], True)
 
 
 if __name__ == "__main__":

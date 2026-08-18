@@ -25,6 +25,7 @@ from automation.codex_auth import (
     CodexAuthRequiredError,
     raise_for_codex_auth,
 )
+from automation.codex_config import ephemeral_from_environment
 from analyzers.event_inclusion import (
     CLASSICAL_CATEGORY_ORDER,
     NONCLASSICAL_CATEGORY_ORDER,
@@ -477,7 +478,7 @@ async def run_agent(
     thread = await codex.thread_start(
         approval_mode=ApprovalMode.deny_all,
         cwd=str(Path.cwd()),
-        ephemeral=False,
+        ephemeral=ephemeral_from_environment(),
         model=model,
         sandbox=Sandbox.workspace_write,
     )

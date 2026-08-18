@@ -61,6 +61,10 @@ database and trusted Codex authentication on that app without placing
 credentials in the repository or image. Database migrations run once before
 the combined runtime starts.
 
+`CODEX_EPHEMERAL` controls thread persistence for both the programme analyzer
+and potential-event classifier. It defaults to `false`; set it to `true` to
+prevent analyzer threads from being persisted by Codex.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CONCERT_PROGRAM_BATCH_SIZE` | `100` | Maximum concerts selected per child batch |
