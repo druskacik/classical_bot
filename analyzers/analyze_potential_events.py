@@ -29,6 +29,7 @@ from analyzers.event_inclusion import (
     validate_decision_category,
 )
 from automation.codex_auth import CodexAuthRequiredError, raise_for_codex_auth
+from automation.codex_config import ephemeral_from_environment
 from crawlers.classical import CONCERT_INSERT_ADVISORY_LOCK
 from observability import configure_logging
 
@@ -1062,7 +1063,7 @@ async def analyze_source(
         thread = await codex.thread_start(
             approval_mode=ApprovalMode.deny_all,
             cwd=str(Path.cwd()),
-            ephemeral=False,
+            ephemeral=ephemeral_from_environment(),
             model=model,
             sandbox=Sandbox.workspace_write,
         )
