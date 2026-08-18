@@ -47,6 +47,46 @@ uv run python -m source_discovery.musicbrainz.download_classical_artists \
   --enrich-urls-from data/musicbrainz_classical_artists.csv
 ```
 
+Prepare a normalized, exact-once manifest for reviewing every active official
+homepage relation:
+
+```bash
+uv run python -m source_discovery.musicbrainz.prepare_official_url_review \
+  --shard-dir data/musicbrainz_official_url_review_shards \
+  --shards 3
+```
+
+After filling the shard decision columns, validate their evidence fields and
+merge them into the auditable review CSV:
+
+```bash
+uv run python -m source_discovery.musicbrainz.merge_official_url_reviews
+```
+
+Prepare a second-pass review of every `needs_deeper_review` row while preserving
+the complete first-pass decision and evidence:
+
+```bash
+uv run python -m source_discovery.musicbrainz.focused_official_url_review prepare
+```
+
+After the focused shard reviews are complete, merge them into the version-2
+audit CSV:
+
+```bash
+uv run python -m source_discovery.musicbrainz.focused_official_url_review merge
+```
+
+Compile all reviewed, current-event official sites into one numbered seed:
+
+```bash
+uv run python -m source_discovery.musicbrainz.compile_seed
+```
+
+The compiler includes people as well as ensembles and organizations, requires
+event evidence to belong to the official site's host, consolidates shared
+hosts, and skips hosts already present in earlier crawler-source seeds.
+
 ## ClassicalConcertMap
 
 Discover organization homepages and compile a new crawler-source seed:
